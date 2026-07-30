@@ -173,6 +173,120 @@ OVERPASS_ENDPOINTS = [
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
+# ─── Yelp Fusion API Configuration ──────────────────────────────────────────────
+# Get a free API key at: https://www.yelp.com/developers
+# Set it as the YELP_API_KEY environment variable.
+YELP_API_KEY = os.environ.get("YELP_API_KEY", "")
+YELP_SEARCH_URL = "https://api.yelp.com/v3/businesses/search"
+
+# Niche → Yelp category alias mapping
+# Full category list: https://www.yelp.com/developers/documentation/v3/all_category_list
+YELP_CATEGORY_MAP: dict[str, str | None] = {
+    # Fitness & Health
+    "fitness gym": "gyms",
+    "fitness": "fitness",
+    "gym": "gyms",
+    "yoga studio": "yoga",
+    "pilates": "pilates",
+    "crossfit": "crossfit",
+    "personal trainer": "healthtrainers",
+    "martial arts": "martialarts",
+    "dance studio": "dancestudio",
+    "swimming pool": "swimmingpools",
+    "sports club": "sports_clubs",
+    # Medical & Dental
+    "dentist": "dentists",
+    "doctor": "doctors",
+    "chiropractor": "chiropractors",
+    "physiotherapy": "physicaltherapy",
+    "optometrist": "optometrists",
+    "pharmacy": "pharmacy",
+    "veterinarian": "vets",
+    # Beauty & Personal Care
+    "hairdresser": "hair",
+    "barber": "barbers",
+    "beauty salon": "beautysalon",
+    "nail salon": "nailartists",
+    "spa": "spa",
+    "massage": "massage",
+    "tattoo": "tattoo",
+    # Food & Drink
+    "restaurant": "restaurants",
+    "cafe": "cafes",
+    "coffee shop": "coffee",
+    "bakery": "bakeries",
+    "pizza": "pizza",
+    "sushi": "sushi",
+    "bar": "bars",
+    "pub": "pubs",
+    "fast food": "fastfood",
+    # Accommodation
+    "hotel": "hotels",
+    "hostel": "hostels",
+    "bed and breakfast": "bedbreakfast",
+    # Real Estate & Property
+    "real estate": "realestate",
+    "real estate agent": "realestateagents",
+    "property management": "propertymanagement",
+    "mortgage broker": "mortgagebrokers",
+    # Automotive
+    "car rental": "carrental",
+    "car dealer": "autodealer",
+    "car repair": "autorepair",
+    "car wash": "carwash",
+    "gas station": "servicestations",
+    "parking": "parking",
+    # Professional Services
+    "marketing agency": "marketing",
+    "it services": "itservices",
+    "software development": "softwaredevelopment",
+    "web design": "webdesign",
+    "graphic design": "graphicdesign",
+    "consulting": "consulting",
+    "accountant": "accountants",
+    "lawyer": "lawyers",
+    "insurance": "insurance",
+    "financial advisor": "financialservices",
+    # Home Services
+    "plumber": "plumbing",
+    "electrician": "electricians",
+    "carpenter": "carpentry",
+    "painter": "painters",
+    "roofing": "roofing",
+    "landscaping": "landscaping",
+    "moving": "movers",
+    "cleaning": "homecleaners",
+    # Education
+    "school": "education",
+    "tutoring": "tutoring",
+    "language school": "languageschools",
+    "music lessons": "musicinstruments",
+    "driving school": "driving_schools",
+    # Entertainment
+    "cinema": "movietheaters",
+    "theatre": "theatre",
+    "nightclub": "nightlife",
+    "casino": "casinos",
+    "bowling": "bowling",
+    "escape room": "escapegames",
+    # Retail
+    "clothing store": "fashion",
+    "electronics store": "electronics",
+    "furniture store": "furniture",
+    "hardware store": "hardware",
+    "grocery store": "grocery",
+    "supermarket": "supermarkets",
+    "bookstore": "bookstores",
+    "pharmacy": "drugstores",
+    # Other common
+    "photography": "photographers",
+    "event planning": "eventplanning",
+    "travel agency": "travelagents",
+    "laundry": "drycleaninglaundry",
+    "pet grooming": "petgroomers",
+    "childcare": "childcare",
+}
+
 # Known country codes for phone number handling
 # Format: {code: {"name": ..., "min_digits": remaining digits needed after country code}}
 COUNTRY_CODES = {
@@ -698,6 +812,195 @@ def search_google_founder(company_name: str) -> tuple | None:
     return None
 
 
+# ─── Yelp Fusion API Search ──────────────────────────────────────────────────────
+
+def _scrape_yelp_website(yelp_url: str) -> str | None:
+    """Scrape a Yelp business page to extract the business website URL.
+    Looks for the URL in JSON-LD structured data on the page.
+    """
+    try:
+        resp = requests.get(
+            yelp_url,
+            headers={
+                "User-Agent": _DESCRIPTION,
+                "Accept": "text/html, */*",
+            },
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            return None
+
+        # Find JSON-LD structured data (schema.org)
+        jsonld_match = re.search(
+            r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            resp.text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if jsonld_match:
+            import json
+            try:
+                data = json.loads(jsonld_match.group(1))
+                # The URL field in schema.org JSON-LD on Yelp pages is the business website
+                url = data.get("url", "")
+                if url and "yelp.com" not in url and url.startswith("http"):
+                    return normalize_url(url)
+                # Also check @graph for multiple entities
+                graph = data.get("@graph", [])
+                for entity in graph:
+                    entity_url = entity.get("url", "")
+                    if entity_url and "yelp.com" not in entity_url and entity_url.startswith("http"):
+                        return normalize_url(entity_url)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        # Fallback: look for external links that aren't yelp.com/social
+        # Pattern: find the website button/link in Yelp's HTML
+        website_pattern = re.compile(
+            r'href=["\'](https?://(?!www\.yelp\.com|yelp\.to|maps\.google|facebook\.com|instagram\.com|twitter\.com)[^"\']+)["\']',
+            re.IGNORECASE,
+        )
+        external_links = website_pattern.findall(resp.text)
+        # Filter: pick the most likely business website (not social, not yelp)
+        for link in external_links:
+            domain = urlparse(link).netloc.lower()
+            if (".yelp." not in domain
+                and "facebook" not in domain
+                and "instagram" not in domain
+                and "twitter" not in domain
+                and "linkedin" not in domain
+                and "youtube" not in domain):
+                return normalize_url(link)
+
+    except requests.RequestException:
+        pass
+    return None
+
+
+def yelp_search(niche: str, location: str, limit: int = 50) -> list:
+    """
+    Search Yelp Fusion API for businesses matching the niche in a location.
+
+    Uses the YELP_API_KEY environment variable for authentication.
+    Maps the niche to a Yelp category, then queries with pagination.
+    For each result, scrapes the Yelp page to find the business website.
+
+    Returns a list of dicts: {name, website, source} where source is "Yelp".
+    Returns empty list if YELP_API_KEY is not set.
+    """
+    if not YELP_API_KEY:
+        print(f"  {_INFO} YELP_API_KEY not set — skipping Yelp search.")
+        print(f"       Get a free key at https://www.yelp.com/developers")
+        return []
+
+    # Map niche to Yelp category
+    niche_lower = niche.lower().strip()
+    category = YELP_CATEGORY_MAP.get(niche_lower)
+
+    # Also check keywords
+    if category is None:
+        for keyword, cat in YELP_CATEGORY_MAP.items():
+            if keyword in niche_lower or niche_lower in keyword:
+                category = cat
+                break
+
+    print(f"\n{_ARROW} Searching Yelp for '{niche}' businesses...")
+    if category:
+        print(f"       Using Yelp category: {category}")
+
+    headers = {
+        "Authorization": f"Bearer {YELP_API_KEY}",
+        "Accept": "application/json",
+    }
+
+    all_businesses = []
+    seen_ids = set()
+
+    # Paginate through results (max 240 = 50 * 5 pages, Yelp's hard limit)
+    for offset in range(0, 240, 50):
+        params = {
+            "location": location,
+            "limit": 50,
+            "offset": offset,
+        }
+        if category:
+            params["categories"] = category
+        else:
+            params["term"] = niche
+
+        try:
+            resp = requests.get(
+                YELP_SEARCH_URL,
+                params=params,
+                headers=headers,
+                timeout=15,
+            )
+        except requests.RequestException as e:
+            print(f"  {_WARN} Yelp API request failed: {e}")
+            break
+
+        if resp.status_code != 200:
+            if resp.status_code == 401:
+                print(f"  {_WARN} Yelp API: Invalid API key. Check YELP_API_KEY.")
+            elif resp.status_code == 429:
+                print(f"  {_WARN} Yelp API rate limit reached. Try again later.")
+            else:
+                print(f"  {_WARN} Yelp API returned status {resp.status_code}")
+            break
+
+        try:
+            data = resp.json()
+        except ValueError:
+            break
+
+        businesses = data.get("businesses", [])
+        if not businesses:
+            break
+
+        for biz in businesses:
+            biz_id = biz.get("id", "")
+            if biz_id in seen_ids:
+                continue
+            seen_ids.add(biz_id)
+
+            name = biz.get("name", "")
+            yelp_biz_url = biz.get("url", "")
+            phone = biz.get("display_phone", "") or biz.get("phone", "")
+
+            if not name:
+                continue
+
+            # Try to get website from Yelp page
+            website = None
+            if yelp_biz_url:
+                website = _scrape_yelp_website(yelp_biz_url)
+
+            # If we have a website, this is a valid lead
+            if website:
+                all_businesses.append({
+                    "name": name,
+                    "website": website,
+                    "phone": phone,
+                    "source": "Yelp",
+                    "yelp_url": yelp_biz_url,
+                })
+
+        print(f"       Got {len(businesses)} businesses from Yelp (page {offset // 50 + 1})...")
+
+        # Stop if we have fewer results than the max (last page)
+        if len(businesses) < 50:
+            break
+
+        # Polite delay between pages
+        time.sleep(0.5)
+
+    if all_businesses:
+        print(f"  {_INFO} Yelp found {len(all_businesses)} businesses with websites.")
+    else:
+        print(f"       No Yelp businesses with discoverable websites.")
+
+    return all_businesses
+
+
 # ─── Email Pattern Inference ────────────────────────────────────────────────────
 
 def infer_email_pattern(known_emails: set, domain: str) -> str | None:
@@ -1211,6 +1514,7 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
 CSV_FIELDS = [
     "Company Name",
     "Website",
+    "Source",
     "WhatsApp Link",
     "Phone Number",
     "WhatsApp Source",
@@ -1370,13 +1674,17 @@ def main():
         print(f"       Targeting {target_count} successful results (must have BOTH emails & WhatsApp).")
     print()
 
-    # Step 3: Scrape websites for emails, phones, and WhatsApp
+    # Step 3: Search Yelp (if API key is available)
+    yelp_results = yelp_search(niche, location, limit=min(50, target_count or 50))
+
+    # Step 4: Scrape websites for emails, phones, and WhatsApp
     results = []
     skipped_no_name = 0
     skipped_no_website = 0
     skipped_no_whatsapp = 0
     skipped_no_email = 0
     errors = 0
+    yelp_count = 0
 
     # Build CSV filename: {niche}_{location}.csv
     clean_location = re.sub(r'[\\/*?:"<>|, ]', '_', location).strip('_')
@@ -1385,6 +1693,8 @@ def main():
 
     # Pre-filter: cheap checks (no name, no website) done sequentially first
     valid_companies = []
+
+    # Add OSM results
     for el in elements:
         tags = el.get("tags", {})
         name = tags.get("name")
@@ -1395,9 +1705,33 @@ def main():
         if not website:
             skipped_no_website += 1
             continue
-        valid_companies.append((name, normalize_url(website)))
+        valid_companies.append((name, normalize_url(website), "OSM"))
 
-    if not valid_companies:
+    # Add Yelp results (dedup by name match with OSM)
+    yelp_names = set()
+    for biz in yelp_results:
+        biz_name = biz["name"]
+        biz_website = biz["website"]
+        # Dedup against OSM results by checking if name already exists
+        name_lower = biz_name.lower().strip()
+        if name_lower in yelp_names:
+            continue
+        yelp_names.add(name_lower)
+        # Check if a similar name exists in OSM results
+        already_have = any(
+            name_lower == n.lower().strip() or
+            name_lower in n.lower() or n.lower() in name_lower
+            for n, _, _ in valid_companies
+        )
+        if not already_have:
+            valid_companies.append((biz_name, biz_website, "Yelp"))
+            yelp_count += 1
+
+    if yelp_count > 0:
+        print(f"\n{_INFO} Added {yelp_count} unique {'business' if yelp_count == 1 else 'businesses'} from Yelp.")
+
+    total_valid = len(valid_companies)
+    if total_valid == 0:
         print(f"\n{_WARN} No companies with names and websites found.")
         save_partial_results(csv_filename, [])
         print(f"{_CROSS} Nothing to process.")
@@ -1410,7 +1744,7 @@ def main():
 
         _target_reached = threading.Event()
 
-        def _worker(c_name, c_website):
+        def _worker(c_name, c_website, c_data_source="OSM"):
             """Worker: scrape one company website. Returns (row|None, info_dict)."""
             if target_count > 0 and _target_reached.is_set():
                 return None, {"skip": "cancelled"}
@@ -1471,6 +1805,7 @@ def main():
                 row = {
                     "Company Name": _clean_csv_val(c_name),
                     "Website": _clean_csv_val(c_website),
+                    "Source": _clean_csv_val(c_data_source),
                     "WhatsApp Link": _clean_csv_val(c_wa_link),
                     "Phone Number": _clean_csv_val(c_phone),
                     "WhatsApp Source": _clean_csv_val(c_source),
@@ -1496,8 +1831,8 @@ def main():
 
         try:
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                future_map = {executor.submit(_worker, n, w): (n, w)
-                              for n, w in valid_companies}
+                future_map = {executor.submit(_worker, n, w, s): (n, w, s)
+                              for n, w, s in valid_companies}
 
                 for future in as_completed(future_map):
                     if target_count > 0 and len(results) >= target_count:
