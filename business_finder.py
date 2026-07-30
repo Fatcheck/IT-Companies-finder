@@ -938,7 +938,14 @@ def geocode_manual() -> list | None:
 
 
 def geocode(location: str) -> list:
-    """Geocode a location. Tries Nominatim first, then falls back to manual input.
+    """Geocode a location. Tries Nominatim with multiple fallback strategies.
+
+    When a POI (Point of Interest) is returned instead of a region, retries
+    with progressively broader location strings:
+    1. Original location
+    2. City + Country (from display_name)
+    3. Just the country (from display_name)
+    4. Last comma-separated part of original location
 
     Returns bbox as [south, north, west, east].
     """
@@ -969,24 +976,54 @@ def geocode(location: str) -> list:
             print()
             print(f"  {_WARN} That looks like a specific POI (Point of Interest), not a region.")
             print(f"        Type: {osm_type}, area: ~{lat_span * 111:.0f} km x {lon_span * 111:.0f} km")
-            print(f"        Trying broader location by adding region/country context...")
             print()
 
-            parts = result["display_name"].split(", ")
-            if len(parts) >= 2:
-                broader = ", ".join(parts[1:3]) if len(parts) >= 3 else ", ".join(parts[1:])
-            else:
-                broader = location + ", region"
+            # Try progressively broader location strings
+            display_parts = result["display_name"].split(", ")
+            candidates = []
 
-            print(f"  {_ARROW} Retrying with: {broader}")
-            broader_result = geocode_nominatim(broader)
-            if broader_result is not None:
-                result = broader_result
-                bbox = result["bbox"]
-                print()
-            else:
-                print(f"  {_WARN} Broader search also failed. Using original bounding box.")
-                print()
+            # Strategy 1: City, Country (last 2 parts of display_name)
+            if len(display_parts) >= 2:
+                candidates.append(", ".join(display_parts[-2:]))
+            # Strategy 2: Just the country (last part of display_name)
+            if len(display_parts) >= 1:
+                candidates.append(display_parts[-1])
+            # Strategy 3: Last part of original location string
+            loc_parts = location.rsplit(",", 1)
+            if len(loc_parts) > 1:
+                candidates.append(loc_parts[-1].strip())
+
+            for broader in candidates:
+                print(f"  {_ARROW} Retrying with: {broader}")
+                broader_result = geocode_nominatim(broader)
+                if broader_result is not None:
+                    new_bbox = broader_result["bbox"]
+                    sn, nn, wn, en = [float(x) for x in new_bbox]
+                    new_lat_span = nn - sn
+                    new_lon_span = en - wn
+
+                    # Check if the broader result is still a POI
+                    still_poi = (
+                        broader_result["osm_type"] in (
+                            "university", "hotel", "restaurant", "museum", "school",
+                            "hospital", "church", "stadium", "theatre", "attraction",
+                            "yes", "building", "cafe", "pub", "shop", "office"
+                        ) or
+                        (new_lat_span < 0.02 and new_lon_span < 0.02)
+                    )
+
+                    if not still_poi:
+                        result = broader_result
+                        bbox = new_bbox
+                        print(f"       Got region: {broader_result['display_name']}")
+                        print()
+                        break
+                    else:
+                        print(f"       Still a POI ({broader_result['osm_type']}), trying broader...")
+                        print()
+                else:
+                    print(f"       Geocoding failed for this candidate.")
+                    print()
 
         GEOCODING_CACHE[location] = bbox
         return bbox
