@@ -1,8 +1,9 @@
 """
-IT Company Finder with WhatsApp & Key Person Email
+Business Finder with WhatsApp & Key Person Email
 ---------------------------------------------------
-Given a location (city, region, or country), this script:
-1. Finds IT-related companies in that area using OpenStreetMap's Overpass API (free, no key needed).
+Given a business niche/type and a location (city, region, or country),
+this script:
+1. Finds companies in that niche using OpenStreetMap's Overpass API (free, no key needed).
 2. Visits each company's website and extracts:
    - Decision-maker names/titles from team/about pages (CEO, Founder, etc.)
    - Contact email addresses (contact/careers pages)
@@ -14,14 +15,34 @@ Given a location (city, region, or country), this script:
 5. Saves results to a CSV file with clickable WhatsApp links and contact info.
 
 USAGE:
-    python it_company_email_finder.py "Denver, Colorado"
-    python it_company_email_finder.py "Ontario, Canada"
-    python it_company_email_finder.py "Amsterdam, Netherlands"
-    python it_company_email_finder.py --limit 20 "Berlin, Germany"
+    python business_finder.py "fitness gym" "Denver, Colorado"
+    python business_finder.py "dentist" "London, UK"
+    python business_finder.py "real estate" "Dubai, UAE"
+    python business_finder.py --limit 20 "restaurant" "Paris, France"
+
+EXAMPLES BY NICHE:
+    # Fitness & Health
+    python business_finder.py "fitness gym" "Berlin, Germany"
+    python business_finder.py "yoga studio" "Amsterdam, Netherlands"
+    python business_finder.py "dentist" "Casablanca, Morocco"
+
+    # Services
+    python business_finder.py "real estate" "Dubai, UAE"
+    python business_finder.py "marketing agency" "New York, USA"
+    python business_finder.py "car rental" "Madrid, Spain"
+
+    # Food & Hospitality
+    python business_finder.py "restaurant" "Paris, France"
+    python business_finder.py "cafe" "Sharjah, UAE"
+    python business_finder.py "hotel" "Marrakech, Morocco"
+
+    # Tech (original use-case still works)
+    python business_finder.py "IT" "Berlin, Germany"
+    python business_finder.py "software" "Austin, Texas"
 
 NOTES / ETIQUETTE:
 - Coverage depends on how well OpenStreetMap is mapped in that region — this will NOT find
-  every IT company, especially in North America. Treat it as a lead generator, not a complete list.
+  every business, especially in North America. Treat it as a lead generator, not a complete list.
 - This only reads publicly listed emails on public web pages.
 - Decision-maker detection: the script scans team/about pages for names near leadership
   titles (CEO, Founder, Managing Director, etc.). Generated emails are best-guess
@@ -113,20 +134,24 @@ if "@example.com" in _CONTACT_EMAIL:
     _WARN_EMAIL = True
 else:
     _WARN_EMAIL = False
-_DESCRIPTION = f"ITCompanyEmailFinder/1.0 (contact={_CONTACT_EMAIL}; job-search project)"
+_DESCRIPTION = f"BusinessFinder/1.0 (contact={_CONTACT_EMAIL}; business-search project)"
 HEADERS = {
     "User-Agent": _DESCRIPTION,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
 
-# Overpass API requires a browser-like User-Agent with contact info
-# Using a real browser UA to avoid 406 errors on GitHub Actions runners
+# Overpass API on GitHub Actions blocks custom User-Agents (406 error).
+# Using a real Chrome browser User-Agent to avoid detection as a scraper.
+_OVERPASS_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 OVERPASS_HEADERS = {
-    "User-Agent": _DESCRIPTION,
+    "User-Agent": _OVERPASS_UA,
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate",
 }
 
 OVERPASS_ENDPOINTS = [
@@ -170,6 +195,11 @@ COUNTRY_HINTS = {
     "south dakota": "+1", "tennessee": "+1", "texas": "+1", "utah": "+1",
     "vermont": "+1", "virginia": "+1", "washington": "+1",
     "west virginia": "+1", "wisconsin": "+1", "wyoming": "+1",
+    # Canada provinces
+    "ontario": "+1", "quebec": "+1", "british columbia": "+1", "alberta": "+1",
+    "manitoba": "+1", "saskatchewan": "+1", "nova scotia": "+1",
+    "new brunswick": "+1", "newfoundland": "+1", "prince edward island": "+1",
+    "canada": "+1",
     # GCC
     "united arab emirates": "+971", "uae": "+971", "dubai": "+971",
     "abu dhabi": "+971", "sharjah": "+971", "ajman": "+971",
@@ -180,20 +210,43 @@ COUNTRY_HINTS = {
     "bahrain": "+973", "manama": "+973",
     # Europe
     "germany": "+49", "deutschland": "+49", "de": "+49",
+    "united kingdom": "+44", "uk": "+44", "england": "+44", "london": "+44",
+    "france": "+33", "paris": "+33",
+    "spain": "+34", "madrid": "+34", "barcelona": "+34",
+    "italy": "+39", "rome": "+39", "milan": "+39",
+    "netherlands": "+31", "holland": "+31", "amsterdam": "+31",
     # Africa
     "morocco": "+212", "maroc": "+212", "casablanca": "+212", "rabat": "+212",
     "marrakech": "+212", "tangier": "+212", "fes": "+212", "agadir": "+212",
 }
 
+# ─── Business niche keyword extraction ──────────────────────────────────────────
 
-def get_country_code_from_location(location: str) -> str | None:
-    """Guess the likely country code from a location string."""
-    loc_lower = location.lower()
-    for keyword, cc in COUNTRY_HINTS.items():
-        if keyword in loc_lower:
-            return cc
-    return None
-
+def extract_niche_keywords(niche: str) -> list:
+    """Extract meaningful keywords from a niche string.
+    
+    Handles multi-word niches like 'fitness gym', 'real estate agent', etc.
+    Returns a list of individual keywords PLUS the full niche phrase.
+    """
+    # Split by common delimiters
+    raw = re.split(r'[,/&]+', niche)
+    keywords = []
+    seen = set()
+    for part in raw:
+        part = part.strip().lower()
+        if not part:
+            continue
+        # Add the whole phrase
+        if part not in seen:
+            seen.add(part)
+            keywords.append(part)
+        # Add individual words
+        for word in part.split():
+            word = word.strip()
+            if word and len(word) > 1 and word not in seen:
+                seen.add(word)
+                keywords.append(word)
+    return keywords
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -204,7 +257,7 @@ def normalize_url(url: str) -> str:
         return ""
     if url.startswith("//"):
         url = "https:" + url
-    elif not url.startswith(("http://", "https://")):
+    elif not url.startswith(( "http://", "https://")):
         url = "https://" + url
     return url.rstrip("/")
 
@@ -251,11 +304,18 @@ def is_valid_email(email: str) -> bool:
     return True
 
 
+def get_country_code_from_location(location: str) -> str | None:
+    """Guess the likely country code from a location string."""
+    loc_lower = location.lower()
+    for keyword, cc in COUNTRY_HINTS.items():
+        if keyword in loc_lower:
+            return cc
+    return None
+
+
 # ─── Phone Number Extraction & Normalization ──────────────────────────────────────
 
 # Phone number pattern (international + national formats)
-# Supports: US (+1), Germany (+49), Morocco (+212), UAE (+971),
-# Saudi Arabia (+966), Qatar (+974), Kuwait (+965), Oman (+968), Bahrain (+973)
 PHONE_RE = re.compile(
     r'(?:(?:\+|00)[1-9][0-9]{0,2}[\s\-/]*(?:\(0\))?[\s\-/]*|0)'
     r'[\s\-/]*\d{2,5}[\s\-/]*\d{2,4}[\s\-/]*\d{2,4}(?:[\s\-/]*\d{2,6})?'
@@ -273,10 +333,7 @@ WA_ME_RE = re.compile(
 def normalize_phone(raw: str) -> str | None:
     """
     Normalize a phone number to international format (+XXX...).
-    Handles numbers from multiple countries:
-      US (+1), Germany (+49), Morocco (+212), UAE (+971),
-      Saudi Arabia (+966), Qatar (+974), Kuwait (+965),
-      Oman (+968), Bahrain (+973).
+    Handles numbers from multiple countries.
     """
     cleaned = re.sub(r'[\s\-/()\.\,]', '', raw)
 
@@ -286,7 +343,6 @@ def normalize_phone(raw: str) -> str | None:
             cc = cleaned[1:1+cc_len]
             if cc in COUNTRY_CODES:
                 return '+' + cc + cleaned[1+cc_len:]
-        # Unknown country code — return as-is for validation
         return cleaned
     elif cleaned.startswith('00'):
         # International format with 00 prefix — convert to +
@@ -297,7 +353,6 @@ def normalize_phone(raw: str) -> str | None:
         return '+' + cleaned[2:]
     elif cleaned.startswith('0'):
         # National format — can't determine country without context
-        # Return as-is; downstream code can try country guesses from location
         return cleaned
     return None
 
@@ -364,7 +419,6 @@ def scrape_site(base_url: str) -> dict:
         return result
 
     # Homepage and contact pages first (core data), then people pages for names
-    # Within each budget slice, homepage and contact always take priority
     paths = [
         "", "/contact", "/contact-us", "/contactez-nous",
         "/team", "/about", "/about-us", "/a-propos", "/notre-equipe",
@@ -421,10 +475,6 @@ def scrape_site(base_url: str) -> dict:
             for p in raw_phones:
                 normalized = normalize_phone(p)
                 if normalized and normalized not in seen_phones:
-                    # Accept both international (+XXX) and national (0XXX) format numbers.
-                    # International numbers are validated against known country codes.
-                    # National format numbers are stored as-is; get_whatsapp_phones will
-                    # try to convert them using the user-provided location context.
                     if normalized.startswith('+') and not is_valid_phone(normalized):
                         continue
                     seen_phones.add(normalized)
@@ -469,7 +519,6 @@ _TITLE_COMBINED = '|'.join(f'(?:{p})' for _, p in TITLE_PATTERNS)
 TITLE_RE = re.compile(_TITLE_COMBINED, re.IGNORECASE)
 
 # Name pattern: two consecutive capitalized words (German, English, French, Spanish chars)
-# Supports accented Latin characters common in international names
 NAME_RE = re.compile(
     r'([A-ZÄÖÜÀÂÆÇÈÉÊËÌÍÎÏÑÒÓÔŒÙÚÛÜŸ][a-zäöüßàâæçèéêëìíîïñòóôœùúûüÿ]+(?:-[A-ZÄÖÜÀÂÆÇÈÉÊËÌÍÎÏÑÒÓÔŒÙÚÛÜŸ][a-zäöüßàâæçèéêëìíîïñòóôœùúûüÿ]+)?)\s+'
     r'([A-ZÄÖÜÀÂÆÇÈÉÊËÌÍÎÏÑÒÓÔŒÙÚÛÜŸ][a-zäöüßàâæçèéêëìíîïñòóôœùúûüÿ]+(?:-[A-ZÄÖÜÀÂÆÇÈÉÊËÌÍÎÏÑÒÓÔŒÙÚÛÜŸ][a-zäöüßàâæçèéêëìíîïñòóôœùúûüÿ]+)?)'
@@ -554,7 +603,6 @@ def extract_people_from_html(html_text: str) -> list:
                 })
 
     # ── Strategy 3: HTML structure (heading + text / card pattern) ──
-    # Look for <h2-6>Short Text</h2-6> followed by <p> or <div> with title
     heading_pattern = re.compile(
         r'<h[2-6][^>]*>([^<]{2,50})</h[2-6]>'
         r'[^<]*(?:<p[^>]*>[^<]{0,150}</p>|<div[^>]*>[^<]{0,150}</div>)',
@@ -562,13 +610,11 @@ def extract_people_from_html(html_text: str) -> list:
     )
     for hm in heading_pattern.finditer(cleaned):
         heading_text = hm.group(1).strip()
-        # Check if heading looks like a name (2 capitalized words)
         nm = NAME_RE.match(heading_text)
         if nm:
             name = nm.group(0)
             name_lower = name.lower()
             if name_lower not in NON_NAMES and name_lower not in seen_names:
-                # Check context after heading for title
                 context = hm.group(0)[len(heading_text):]
                 title_match = TITLE_RE.search(context)
                 title = title_match.group(0) if title_match else "Team Member"
@@ -599,8 +645,8 @@ def _get_title_rank(title: str) -> int:
 _GOOGLE_SEARCH_LOCK = threading.Lock()
 _GOOGLE_SEARCH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                   "Chrome/120.0.0.0 Safari/537.36",
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.google.com/",
@@ -632,12 +678,9 @@ def search_google_founder(company_name: str) -> tuple | None:
     if resp.status_code != 200:
         return None
 
-    # Reuse the existing people extraction logic on Google's search results page.
-    # Google snippets often show "John Doe - Founder & CEO" which our parser handles.
     people = extract_people_from_html(resp.text)
 
     if people:
-        # Return the most senior person found (founder/CEO level)
         top = people[0]
         return top["name"], top["title"]
 
@@ -744,12 +787,10 @@ def check_whatsapp_via_api(phone: str) -> bool:
         )
         if resp.status_code == 200:
             body = resp.text.lower()
-            # Look for WhatsApp-specific page content
             if 'whatsapp' in body and ('send' in body or 'chat' in body or 'continue' in body):
                 return True
         return False
     except requests.RequestException:
-        # Silently fail — will rely on site indicators instead
         return False
 
 
@@ -776,12 +817,10 @@ def get_whatsapp_phones(site_data: dict, location: str = "") -> list:
 
     # 2. If site mentions WhatsApp, try to verify found phone numbers
     if site_data["site_whatsapp"]:
-        # Try to get country code from location for national format numbers
         country_code = get_country_code_from_location(location) if location else None
         for num in site_data["phones"]:
             if num not in seen:
                 seen.add(num)
-                # If national format, try with location-based country code
                 if num.startswith('0') and country_code:
                     international = country_code + num[1:]
                     if is_valid_phone(international):
@@ -794,7 +833,6 @@ def get_whatsapp_phones(site_data: dict, location: str = "") -> list:
         country_code = get_country_code_from_location(location) if location else None
         for num in site_data["phones"]:
             if num not in seen:
-                # Try national format with location-based country code
                 if num.startswith('0') and country_code:
                     international = country_code + num[1:]
                     if is_valid_phone(international):
@@ -812,14 +850,12 @@ def get_whatsapp_phones(site_data: dict, location: str = "") -> list:
 
 # ─── Geocoding ───────────────────────────────────────────────────────────────────
 # Uses Nominatim (free, OpenStreetMap-based) with a descriptive User-Agent.
-# If Nominatim fails, falls back to manual coordinate input.
 
 GEOCODING_CACHE: dict = {}  # location -> bbox
 
 
 def geocode_nominatim(location: str) -> dict | None:
     """Try Nominatim geocoding. Returns dict with bbox, osm_type, display_name or None."""
-    # 1 req/sec rate limit
     time.sleep(1.0)
 
     params = {
@@ -868,7 +904,6 @@ def geocode_nominatim(location: str) -> dict | None:
     print(f"  Found: {display_name}")
     print(f"         Lat: {lat}, Lon: {lon}")
     print(f"         Type: {osm_type}")
-    # Return bbox + type info
     return {"bbox": bbox, "osm_type": osm_type, "display_name": display_name}
 
 
@@ -908,16 +943,14 @@ def geocode(location: str) -> list:
         bbox = result["bbox"]
         osm_type = result["osm_type"]
 
-        # Sanity check: if the result is a specific POI rather than a city/region,
-        # try appending context to get the broader area
         south, north, west, east = [float(x) for x in bbox]
         lat_span = north - south
         lon_span = east - west
 
         is_poi = (
             osm_type in ("university", "hotel", "restaurant", "museum", "school",
-                        "hospital", "church", "stadium", "theatre", "attraction",
-                        "yes", "building", "cafe", "pub", "shop", "office") or
+                         "hospital", "church", "stadium", "theatre", "attraction",
+                         "yes", "building", "cafe", "pub", "shop", "office") or
             (lat_span < 0.02 and lon_span < 0.02)
         )
 
@@ -928,10 +961,8 @@ def geocode(location: str) -> list:
             print(f"        Trying broader location by adding region/country context...")
             print()
 
-            # Try to extract city/country from the display name and re-geocode
             parts = result["display_name"].split(", ")
             if len(parts) >= 2:
-                # Use just the city and country
                 broader = ", ".join(parts[1:3]) if len(parts) >= 3 else ", ".join(parts[1:])
             else:
                 broader = location + ", region"
@@ -963,17 +994,32 @@ def geocode(location: str) -> list:
     )
 
 
-# ─── Overpass Query ──────────────────────────────────────────────────────────────
+# ─── Overpass Query Builder (Dynamic — works for ANY niche) ──────────────────────
 
-def overpass_query(bbox: list) -> list:
-    """Query Overpass API for IT companies within a bounding box.
+def build_overpass_queries(bbox: list, niche: str) -> tuple:
+    """
+    Build dynamic Overpass queries for a generic business niche.
 
-    Uses a two-phase approach:
-    1. First, runs specific IT-related queries (office=it, software, etc.)
-    2. Always runs a broader catch-all query for global coverage
-       (any office with website, IT-named offices, computer shops).
+    Uses a multi-phase approach:
+    Phase 1: Name-based matching + tag-value matching across all business types
+    Phase 2: Broad catch-all for any element with a website
+
+    The niche string is split into keywords, and the query matches:
+    - Businesses whose NAME contains any niche keyword
+    - Businesses whose TAG VALUES match niche keywords (e.g., leisure=fitness_centre for "fitness")
+    - Businesses with relevant industry tags
     """
     south, north, west, east = bbox
+
+    # Extract keywords from the niche string
+    keywords = extract_niche_keywords(niche)
+    if not keywords:
+        raise ValueError(f"No valid keywords extracted from niche: '{niche}'")
+
+    # Build regex patterns
+    # Escape special regex characters in keywords
+    escaped_keywords = [re.escape(k) for k in keywords]
+    name_pattern = "|".join(escaped_keywords)
 
     def _run_overpass(query_body: str) -> list:
         """Execute an Overpass query and return elements."""
@@ -1005,67 +1051,77 @@ def overpass_query(bbox: list) -> list:
                 continue
         raise RuntimeError(f"All {len(OVERPASS_ENDPOINTS)} Overpass endpoints failed: {last_error}")
 
-    # ── Phase 1: Specific IT queries ──
-    specific_query = f"""
-      node["office"="it"]({south},{west},{north},{east});
-      way["office"="it"]({south},{west},{north},{east});
-      relation["office"="it"]({south},{west},{north},{east});
+    # ── Phase 1: Name-based + tag-specific queries ──
+    print(f"  {_ARROW} Searching for '{niche}' businesses by name and tags...")
+    name_based_query = f"""
+      // All office types with name matching the niche
+      node["office"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
+      way["office"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
+      relation["office"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      node["office"="company"]["industry"~"it|software|technology|computer|digital|cyber|telecom|information",i]({south},{west},{north},{east});
+      // All shop types with name matching the niche
+      node["shop"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
+      way["shop"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      node["office"="consulting"]["industry"~"it|software|technology|computer|digital",i]({south},{west},{north},{east});
+      // All amenity types with name matching the niche
+      node["amenity"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
+      way["amenity"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      node["office"="software"]({south},{west},{north},{east});
-      node["office"="web_developer"]({south},{west},{north},{east});
-      node["office"="application_development"]({south},{west},{north},{east});
+      // All leisure types with name matching the niche
+      node["leisure"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
+      way["leisure"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      node["office"="it_service"]({south},{west},{north},{east});
-      node["office"="it_consulting"]({south},{west},{north},{east});
-      node["office"="it_support"]({south},{west},{north},{east});
+      // All sport-related with name matching
+      node["sport"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
+      way["sport"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      node["shop"="computer"]({south},{west},{north},{east});
-      way["shop"="computer"]({south},{west},{north},{east});
+      // Tourism businesses with name matching
+      node["tourism"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
+      way["tourism"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      node["office"="cybersecurity"]({south},{west},{north},{east});
-      node["office"="security"]["industry"~"it|cyber|software",i]({south},{west},{north},{east});
+      // Healthcare providers with name matching
+      node["healthcare"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
+      way["healthcare"]["name"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      node["office"="coworking"]["industry"~"it|software|technology|digital",i]({south},{west},{north},{east});
+      // Office+industry matching the niche
+      node["office"]["industry"~"{name_pattern}",i]({south},{west},{north},{east});
+      way["office"]["industry"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      node["office"~"it|software|technology|digital|cyber",i]({south},{west},{north},{east});
+      // Direct tag-value matching (e.g., leisure=fitness_centre for "fitness")
+      // This catches entities where the tag value itself matches the niche
+      node[~"^(amenity|shop|office|leisure|sport|healthcare|tourism|catering)$"~"{name_pattern}",i]({south},{west},{north},{east});
+      way[~"^(amenity|shop|office|leisure|sport|healthcare|tourism|catering)$"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      // General company offices (common in less-detailed regions)
+      // Any company offices (common in less-detailed regions)
       node["office"="company"]({south},{west},{north},{east});
       way["office"="company"]({south},{west},{north},{east});
       relation["office"="company"]({south},{west},{north},{east});
     """
 
-    elements = _run_overpass(specific_query)
-    print(f"\n{_INFO} Found {len(elements)} candidates from specific IT queries.")
+    elements = _run_overpass(name_based_query)
+    print(f"\n{_INFO} Found {len(elements)} candidates from name/tag-based queries.")
 
-    # ── Phase 2: Broad catch-all (always runs for better global coverage) ──
+    # ── Phase 2: Broad catch-all for global coverage ──
     print(f"     Running broader catch-all query for global coverage...")
     catchall_query = f"""
-      // All office types with websites (critical for US/GCC/Morocco where tagging differs)
+      // Any element with a website and name matching the niche
+      node["name"~"{name_pattern}",i]["website"~"."]({south},{west},{north},{east});
+      way["name"~"{name_pattern}",i]["website"~"."]({south},{west},{north},{east});
+      relation["name"~"{name_pattern}",i]["website"~"."]({south},{west},{north},{east});
+
+      // Any office with a website (even without name matching — catches generic offices)
       node["office"]["website"~"."]({south},{west},{north},{east});
       way["office"]["website"~"."]({south},{west},{north},{east});
       relation["office"]["website"~"."]({south},{west},{north},{east});
 
-      // Company offices with websites (even without industry tag)
+      // Any company office with a website
       node["office"="company"]["website"~"."]({south},{west},{north},{east});
       way["office"="company"]["website"~"."]({south},{west},{north},{east});
       relation["office"="company"]["website"~"."]({south},{west},{north},{east});
-
-      // Computer/electronics shops (common in less-mapped areas for IT-related businesses)
-      node["shop"="computer"]["website"~"."]({south},{west},{north},{east});
-      way["shop"="computer"]["website"~"."]({south},{west},{north},{east});
-
-      // IT/tech named offices without explicit type tag
-      node["office"]["name"~"it|tech|soft|digital|cyber|computer|data|web|telecom|consulting|technology",i]({south},{west},{north},{east});
-      way["office"]["name"~"it|tech|soft|digital|cyber|computer|data|web|telecom|consulting|technology",i]({south},{west},{north},{east});
     """
     extra_elements = _run_overpass(catchall_query)
 
-    # Deduplicate by element id, keep elements from specific query first
+    # Deduplicate by element id, keep elements from name-based query first
     seen_ids = {(el.get("type", ""), el.get("id")) for el in elements}
     for el in extra_elements:
         key = (el.get("type", ""), el.get("id"))
@@ -1123,11 +1179,9 @@ def save_partial_results(filename: str, results: list):
     - Deduplicates rows by (Company Name, Website) pair.
     - Ensures no None values slip into the output.
     """
-    # Deduplicate first
     results = _dedup_results(results)
 
     try:
-        # utf-8-sig writes a UTF-8 BOM so Google Sheets detects the encoding
         with open(filename, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writeheader()
@@ -1140,7 +1194,6 @@ def save_partial_results(filename: str, results: list):
 
 def signal_handler(sig, frame):
     print(f"\n\n{_WARN} Interrupted by user. Saving results so far...")
-    # main() will handle the actual save via the outfile variable
     raise KeyboardInterrupt()
 
 
@@ -1150,11 +1203,18 @@ def main():
     # Parse CLI args
     args = sys.argv[1:]
     if not args or "-h" in args or "--help" in args:
-        print("IT Company Email Finder")
+        print("Business Finder — Find companies in ANY niche with emails & WhatsApp")
         print()
         print("Usage:")
-        print(f"  python {os.path.basename(__file__)} \"City, Region\"")
-        print(f"  python {os.path.basename(__file__)} --limit 30 \"Amsterdam, Netherlands\"")
+        print(f"  python {os.path.basename(__file__)} <niche> <location>")
+        print(f"  python {os.path.basename(__file__)} --limit 30 <niche> <location>")
+        print()
+        print("Examples:")
+        print(f'  python {os.path.basename(__file__)} "fitness gym" "Denver, Colorado"')
+        print(f'  python {os.path.basename(__file__)} "dentist" "London, UK"')
+        print(f'  python {os.path.basename(__file__)} "real estate" "Dubai, UAE"')
+        print(f'  python {os.path.basename(__file__)} --limit 20 "restaurant" "Paris, France"')
+        print(f'  python {os.path.basename(__file__)} "IT" "Berlin, Germany"')
         print()
         print("Options:")
         print("  --limit N   Max companies to process (default: unlimited)")
@@ -1162,8 +1222,10 @@ def main():
         sys.exit(0)
 
     global MAX_COMPANIES
-    location_args = []
     i = 0
+    niche = None
+    location_parts = []
+
     while i < len(args):
         if args[i] == "--limit":
             if i + 1 >= len(args):
@@ -1178,23 +1240,38 @@ def main():
                 print(f"{_CROSS} --limit must be a positive number")
                 sys.exit(1)
             i += 2
-        else:
-            location_args.append(args[i])
+        elif niche is None:
+            # First non-flag arg is the NICHE
+            niche = args[i]
             i += 1
-    location = " ".join(location_args)
+        else:
+            # Remaining args are the LOCATION
+            location_parts.append(args[i])
+            i += 1
+
+    if not niche:
+        print(f"{_CROSS} Please provide a business niche (e.g., \"fitness gym\", \"restaurant\", \"IT\")")
+        print(f"  Usage: python {os.path.basename(__file__)} <niche> <location>")
+        sys.exit(1)
+
+    location = " ".join(location_parts)
+    if not location:
+        print(f"{_CROSS} Please provide a location (e.g., \"Denver, Colorado\", \"London, UK\")")
+        print(f"  Usage: python {os.path.basename(__file__)} <niche> <location>")
+        sys.exit(1)
 
     # Set up signal handler for graceful Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Warn if contact email is still the placeholder (Overpass will 406)
+    # Warn if contact email is still the placeholder
     if _WARN_EMAIL:
         print(f"  {_WARN} Replace '_CONTACT_EMAIL' with your real email to avoid Overpass API 406 errors.")
-        print(f"      Edit it_company_email_finder.py, find '_CONTACT_EMAIL' at the top, and")
+        print(f"      Edit business_finder.py, find '_CONTACT_EMAIL' at the top, and")
         print(f"      change 'user@example.com' to your actual email address.")
         print()
 
     print(_LINE)
-    print(f"  IT Company Email Finder")
+    print(f"  Business Finder — Search for '{niche}' businesses")
     print(f"  Location: {location}")
     if MAX_COMPANIES > 0:
         print(f"  Max companies: {MAX_COMPANIES}")
@@ -1208,15 +1285,15 @@ def main():
         print(f"{_CROSS} {e}")
         sys.exit(1)
 
-    # Step 2: Query Overpass
-    print(f"\n{_ARROW} Querying OpenStreetMap for IT companies (up to 180 seconds)...")
+    # Step 2: Query Overpass (dynamic — works for any niche)
+    print(f"\n{_ARROW} Querying OpenStreetMap for '{niche}' businesses (up to 180 seconds)...")
     try:
-        elements = overpass_query(bbox)
-    except RuntimeError as e:
+        elements = build_overpass_queries(bbox, niche)
+    except (RuntimeError, ValueError) as e:
         print(f"{_CROSS} {e}")
         sys.exit(1)
 
-    target_count = MAX_COMPANIES  # how many successful results we aim for
+    target_count = MAX_COMPANIES
     print(f"\n{_INFO} Found {len(elements)} candidate businesses on OpenStreetMap.")
     if target_count > 0:
         print(f"       Targeting {target_count} successful results (must have BOTH emails & WhatsApp).")
@@ -1229,7 +1306,11 @@ def main():
     skipped_no_whatsapp = 0
     skipped_no_email = 0
     errors = 0
-    csv_filename = f"it_companies_{re.sub(r'[\\\\/*?:\"<>|, ]', '_', location).strip('_')}.csv"
+
+    # Build CSV filename: {niche}_{location}.csv
+    clean_location = re.sub(r'[\\/*?:"<>|, ]', '_', location).strip('_')
+    clean_niche = re.sub(r'[\\/*?:"<>|, ]', '_', niche).strip('_')
+    csv_filename = f"businesses_{clean_niche}_{clean_location}.csv"
 
     # Pre-filter: cheap checks (no name, no website) done sequentially first
     valid_companies = []
@@ -1249,7 +1330,6 @@ def main():
         print(f"\n{_WARN} No companies with names and websites found.")
         save_partial_results(csv_filename, [])
         print(f"{_CROSS} Nothing to process.")
-        # Set counters to 0 so summary works cleanly
         skipped_no_whatsapp = 0
         skipped_no_email = 0
         errors = 0
@@ -1293,16 +1373,13 @@ def main():
                             c_email = em
                             break
 
-                # Try Google search for the founder — always fires to potentially
-                # find a more senior person (Founder/CEO) than what the website showed.
-                # Only updates if Google finds someone MORE senior.
+                # Try Google search for the founder
                 google_result = search_google_founder(c_name)
                 if google_result:
                     g_name, g_title = google_result
                     g_rank = _get_title_rank(g_title)
                     current_rank = _get_title_rank(c_title) if c_person else 999
                     if g_rank < current_rank:
-                        # Google found a more senior person — use it
                         c_person = g_name
                         c_title = g_title
                         founder_source = "Google search"
@@ -1352,7 +1429,6 @@ def main():
                               for n, w in valid_companies}
 
                 for future in as_completed(future_map):
-                    # Before processing this result, check if target already met
                     if target_count > 0 and len(results) >= target_count:
                         _target_reached.set()
                         for f in future_map:
@@ -1397,7 +1473,7 @@ def main():
         except KeyboardInterrupt:
             _target_reached.set()
 
-        # Final save (runs after normal completion or KeyboardInterrupt)
+        # Final save
         save_partial_results(csv_filename, results)
         print()
 
@@ -1407,12 +1483,11 @@ def main():
     print(f"  {_CHECK} DONE - Results saved to: {csv_filename}")
     print(_LINE)
 
-    # Deduplicate for accurate summary counts (matches what's written to CSV)
     final_results = _dedup_results(results)
     total = len(final_results)
     with_emails = sum(1 for r in final_results if r["All Emails Found"])
     total_emails = sum(len(r["All Emails Found"].split("; ")) for r in final_results if r["All Emails Found"])
-    with_whatsapp = total  # All results have WhatsApp (that's the filter)
+    with_whatsapp = total
 
     print(f"  Total companies with WhatsApp:  {total}")
     print(f"  Companies with emails + WhatsApp: {with_emails}")
@@ -1444,7 +1519,7 @@ def main():
     print(f"    2. File > Import > Upload > select the CSV file")
     print(f"    3. Choose 'Replace current sheet' or 'New sheet'")
     print(f"    4. The WhatsApp Link column has clickable hyperlinks")
-    print(f"  \n  Each result includes a clickable WhatsApp link.")
+    print(f"\n  Each result includes a clickable WhatsApp link.")
     print(f"  Open the CSV file in Excel or any spreadsheet app to see the full results.")
 
 

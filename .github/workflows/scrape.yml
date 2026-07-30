@@ -1,8 +1,12 @@
-name: Scrape IT Companies
+name: Scrape Businesses
 
 on:
   workflow_dispatch:
     inputs:
+      niche:
+        description: 'Business niche (e.g. "fitness gym", "IT", "dentist", "real estate")'
+        required: true
+        type: string
       location:
         description: 'City, Region (e.g. "Berlin, Germany" or "Dubai, UAE")'
         required: true
@@ -45,10 +49,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run IT Company Finder
+      - name: Run Business Finder
         run: |
-          python it_company_email_finder.py \
+          python business_finder.py \
             --limit "${{ inputs.limit }}" \
+            "${{ inputs.niche }}" \
             "${{ inputs.location }}"
         env:
           MAX_WORKERS: ${{ inputs.workers }}
@@ -57,7 +62,7 @@ jobs:
       - name: Upload CSV results (artifact - download from Actions tab)
         uses: actions/upload-artifact@v4
         with:
-          name: it-companies-${{ github.run_id }}
+          name: businesses-${{ github.run_id }}
           path: "*.csv"
           retention-days: 30
           if-no-files-found: warn
@@ -73,5 +78,5 @@ jobs:
           
           # Add and commit CSV files
           git add *.csv
-          git diff --cached --quiet || git commit -m "Add CSV results for ${{ inputs.location }} [skip ci]"
+          git diff --cached --quiet || git commit -m "Add CSV results for ${{ inputs.niche }} / ${{ inputs.location }} [skip ci]"
           git push
