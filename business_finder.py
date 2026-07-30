@@ -141,14 +141,25 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
-# Overpass API on GitHub Actions blocks custom User-Agents (406 error).
-# Using a real Chrome browser User-Agent to avoid detection as a scraper.
+# Overpass API requires a descriptive User-Agent with a way to contact the operator.
+# The _DESCRIPTION string (with contact email) satisfies this requirement.
+# A Chrome UA is kept as a fallback if the descriptive one is rejected.
 _OVERPASS_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
+
+# Primary Overpass headers: descriptive UA with contact email (per Overpass policy)
 OVERPASS_HEADERS = {
+    "User-Agent": _DESCRIPTION,
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+}
+
+# Fallback Overpass headers: Chrome UA (used if primary gets a 406)
+_OVERPASS_FALLBACK_HEADERS = {
     "User-Agent": _OVERPASS_UA,
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
@@ -1022,7 +1033,13 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
     name_pattern = "|".join(escaped_keywords)
 
     def _run_overpass(query_body: str) -> list:
-        """Execute an Overpass query and return elements."""
+        """Execute an Overpass query and return elements.
+
+        Uses a retry strategy:
+        1. Try each endpoint with the descriptive UA (has contact email)
+        2. On 406, retry the same endpoint with Chrome UA as fallback
+        3. Move to next endpoint if all attempts fail
+        """
         full_query = f"""
         [out:json][timeout:300];
         (
@@ -1032,23 +1049,40 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
         """
         last_error = None
         for i, endpoint in enumerate(OVERPASS_ENDPOINTS):
-            try:
-                if i > 0:
-                    print(f"    Retrying with fallback server...")
-                r = requests.post(
-                    endpoint,
-                    data={"data": full_query},
-                    headers=OVERPASS_HEADERS,
-                    timeout=180,
-                )
-                r.raise_for_status()
-                return r.json().get("elements", [])
-            except requests.RequestException as e:
-                print(f"  {_WARN} Endpoint {endpoint} failed: {e}")
-                if hasattr(e, 'response') and e.response is not None:
-                    print(f"        Status: {e.response.status_code}")
-                last_error = e
-                continue
+            if i > 0:
+                print(f"    Retrying with fallback server...")
+
+            # Try with descriptive UA first
+            for attempt, headers in [(1, OVERPASS_HEADERS), (2, _OVERPASS_FALLBACK_HEADERS)]:
+                if attempt == 2:
+                    print(f"         Trying Chrome UA fallback...")
+                try:
+                    r = requests.post(
+                        endpoint,
+                        data={"data": full_query},
+                        headers=headers,
+                        timeout=180,
+                    )
+                    r.raise_for_status()
+                    return r.json().get("elements", [])
+                except requests.RequestException as e:
+                    status = getattr(e, 'response', None) and e.response.status_code
+                    if status == 406 and attempt == 1:
+                        # 406 with descriptive UA — try Chrome UA on same endpoint
+                        continue
+                    if status == 406 and attempt == 2:
+                        # Both UAs got 406 on this endpoint — move to next
+                        print(f"  {_WARN} Endpoint {endpoint} refused both User-Agents (406)")
+                        last_error = e
+                        break  # break inner loop, continue to next endpoint
+                    if status:
+                        print(f"  {_WARN} Endpoint {endpoint} failed: {e}")
+                        print(f"        Status: {status}")
+                    else:
+                        print(f"  {_WARN} Endpoint {endpoint} failed: {e}")
+                    last_error = e
+                    break  # break inner loop, continue to next endpoint
+
         raise RuntimeError(f"All {len(OVERPASS_ENDPOINTS)} Overpass endpoints failed: {last_error}")
 
     # ── Phase 1: Name-based + tag-specific queries ──
