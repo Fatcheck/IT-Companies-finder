@@ -704,6 +704,97 @@ def search_google_founder(company_name: str) -> tuple | None:
     return None
 
 
+# ─── Google Organic Business Discovery (free, no API key) ───────────────────────
+# Searches Google for "{niche} in {location}" and extracts business names + websites
+# from the organic search results. This is free but needs polite rate-limiting.
+# Google may block aggressive scraping — the function uses a 2-second delay.
+
+_GOOGLE_BIZ_LOCK = threading.Lock()
+_GOOGLE_BIZ_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.google.com/",
+}
+
+# Regex to extract business names and websites from Google SERP
+# Google SERP structure varies, but business listings often appear in specific patterns
+# (Removed — unused; business extraction uses h3_pattern below)
+
+
+def search_google_businesses(niche: str, location: str, limit: int = 50) -> list:
+    """
+    Search Google for '{niche} in {location}' and extract business names + websites.
+
+    This is a free, no-API-key alternative to Yelp/HERE for discovering businesses.
+    Uses a global lock to be polite (max 1 Google search per 2 seconds).
+    Returns a list of dicts: {name, website, source: "Google"}.
+
+    Note: Google may block excessive scraping. This is best-effort.
+    The function extracts from organic search results and Google Maps panels.
+    """
+    results = []
+    seen_domains = set()
+
+    queries = [
+        f"{niche} in {location}",
+        f"{niche} {location}",
+        f"best {niche} in {location}",
+        f"top {niche} in {location}",
+    ]
+
+    for query in queries:
+        with _GOOGLE_BIZ_LOCK:
+            time.sleep(2.0)  # Polite delay — 2 seconds between Google queries
+            try:
+                resp = requests.get(
+                    "https://www.google.com/search",
+                    params={"q": query, "hl": "en", "num": 10},
+                    headers=_GOOGLE_BIZ_HEADERS,
+                    timeout=10,
+                )
+            except requests.RequestException:
+                continue
+
+        if resp.status_code != 200:
+            continue
+
+        html = resp.text
+
+        # Strategy 1: Extract from organic results (h3 tags with links)
+        # Google wraps result titles in <h3> with <a> inside
+        h3_pattern = re.compile(
+            r'<h3[^>]*>\s*<a[^>]*href="(https?://[^"\s]+)"[^>]*>\s*([^<]{3,})\s*</a>\s*</h3>',
+            re.IGNORECASE
+        )
+        for match in h3_pattern.finditer(html):
+            url = match.group(1)
+            raw_name = match.group(2).strip()
+            name = raw_name.replace("&#39;", "'").replace("&amp;", "&").replace("&quot;", '"')
+            domain = urlparse(url).netloc.lower()
+            if any(skip in domain for skip in ["google.com", "youtube.com", "facebook.com",
+                                                "instagram.com", "twitter.com", "linkedin.com",
+                                                "pinterest.com", "yelp.com", "maps.google.com"]):
+                continue
+            if domain in seen_domains or not name:
+                continue
+            seen_domains.add(domain)
+            results.append({
+                "name": name,
+                "website": normalize_url(url),
+                "source": "Google",
+            })
+            if len(results) >= limit:
+                break
+
+        if len(results) >= limit:
+            break
+
+    return results
+
+
 # ─── HERE Geocoding & Search API Search ──────────────────────────────────────────
 
 def here_search(niche: str, location: str, limit: int = 100) -> list:
@@ -1178,20 +1269,217 @@ def geocode(location: str) -> list:
     )
 
 
+# ─── Smart Niche → OSM Tag Mapping ─────────────────────────────────────────────
+# Maps common niche keywords to exact OSM tag:value pairs so the Overpass query
+# catches businesses even when the niche word isn't in their name.
+# E.g. "fitness gym" -> amenity=gym, leisure=fitness_centre, leisure=sports_centre
+# Add more mappings as needed for your niches.
+NICHE_OSM_TAGS = {
+    # Fitness & Health
+    "fitness": ["leisure=fitness_centre", "leisure=sports_centre", "amenity=gym", "sport=fitness"],
+    "gym": ["leisure=fitness_centre", "amenity=gym"],
+    "fitness gym": ["leisure=fitness_centre", "amenity=gym", "leisure=sports_centre"],
+    "gymnasium": ["leisure=fitness_centre", "amenity=gym"],
+    "yoga": ["leisure=fitness_centre", "amenity=gym", "leisure=yoga"],
+    "yoga studio": ["leisure=fitness_centre", "amenity=gym"],
+    "pilates": ["leisure=fitness_centre", "amenity=gym"],
+    "crossfit": ["leisure=fitness_centre", "sport=crossfit"],
+    "personal trainer": ["leisure=fitness_centre", "sport=personal_trainer"],
+
+    # Food & Dining
+    "restaurant": ["amenity=restaurant", "amenity=fast_food", "amenity=food_court"],
+    "cafe": ["amenity=cafe", "amenity=coffee_shop", "shop=coffee"],
+    "coffee shop": ["amenity=cafe", "shop=coffee"],
+    "bakery": ["shop=bakery", "amenity=bakery"],
+    "pizza": ["amenity=restaurant", "amenity=fast_food", "cuisine=pizza"],
+    "bar": ["amenity=bar", "amenity=pub", "amenity=nightclub"],
+    "pub": ["amenity=pub", "amenity=bar"],
+    "fast food": ["amenity=fast_food"],
+    "ice cream": ["amenity=ice_cream", "shop=ice_cream"],
+
+    # Health & Medical
+    "dentist": ["amenity=dentist", "healthcare=dentist"],
+    "doctor": ["amenity=doctors", "healthcare=doctor"],
+    "clinic": ["amenity=clinic", "healthcare=clinic"],
+    "hospital": ["amenity=hospital", "healthcare=hospital"],
+    "pharmacy": ["amenity=pharmacy", "healthcare=pharmacy"],
+    "optician": ["shop=optician", "healthcare=optometrist"],
+    "physiotherapist": ["healthcare=physiotherapist", "amenity=physiotherapist"],
+    "veterinary": ["amenity=veterinary", "healthcare=veterinary"],
+
+    # Beauty & Personal Care
+    "beauty salon": ["shop=hairdresser", "shop=beauty", "shop=cosmetics"],
+    "hairdresser": ["shop=hairdresser", "shop=barber"],
+    "barber": ["shop=barber", "shop=hairdresser"],
+    "nail salon": ["shop=beauty", "shop=cosmetics"],
+    "spa": ["shop=beauty", "leisure=spa", "amenity=spa"],
+    "massage": ["shop=massage", "leisure=massage", "amenity=massage"],
+
+    # Accommodation
+    "hotel": ["tourism=hotel", "tourism=guest_house", "tourism=hostel", "tourism=motel"],
+    "hostel": ["tourism=hostel"],
+    "motel": ["tourism=motel"],
+    "guest house": ["tourism=guest_house"],
+    "bed and breakfast": ["tourism=guest_house", "tourism=bed_and_breakfast"],
+    "apartment": ["tourism=apartment", "tourism=apart_hotel"],
+
+    # Real Estate & Property
+    "real estate": ["office=real_estate", "office=estate_agent", "shop=estate_agent"],
+    "real estate agent": ["office=real_estate", "office=estate_agent"],
+    "property": ["office=real_estate", "office=property_management"],
+    "property management": ["office=property_management"],
+    "architect": ["office=architect", "shop=architect"],
+
+    # Automotive
+    "car rental": ["amenity=car_rental", "shop=car_rental"],
+    "car dealer": ["shop=car", "shop=car_dealer"],
+    "car repair": ["shop=car_repair", "amenity=car_repair"],
+    "auto repair": ["shop=car_repair", "amenity=car_repair"],
+    "mechanic": ["shop=car_repair", "amenity=car_repair"],
+    "car wash": ["amenity=car_wash", "shop=car_wash"],
+    "gas station": ["amenity=fuel", "shop=fuel"],
+    "petrol station": ["amenity=fuel"],
+    "parking": ["amenity=parking"],
+    "taxi": ["amenity=taxi", "shop=taxi"],
+
+    # Tech & Business Services
+    "it": ["office=it", "office=software", "office=technology"],
+    "software": ["office=software", "office=it"],
+    "it company": ["office=it", "office=software"],
+    "technology": ["office=technology", "office=it"],
+    "startup": ["office=startup", "office=company"],
+    "coworking": ["amenity=coworking", "office=coworking"],
+    "marketing agency": ["office=marketing", "office=advertising"],
+    "advertising": ["office=advertising", "office=marketing"],
+    "consulting": ["office=consulting", "office=management_consulting"],
+    "law firm": ["office=lawyer", "office=attorney", "office=legal"],
+    "lawyer": ["office=lawyer", "office=attorney", "office=legal"],
+    "accountant": ["office=accountant", "office=accounting"],
+    "insurance": ["office=insurance", "shop=insurance"],
+    "bank": ["amenity=bank", "office=bank"],
+    "financial": ["office=financial", "office=insurance", "amenity=bank"],
+    "recruitment": ["office=recruitment", "office=employment_agency"],
+    "employment agency": ["office=employment_agency", "office=recruitment"],
+
+    # Education
+    "school": ["amenity=school", "amenity=college", "amenity=university"],
+    "university": ["amenity=university", "amenity=college"],
+    "college": ["amenity=college", "amenity=university"],
+    "language school": ["amenity=language_school", "office=language_school"],
+    "driving school": ["amenity=driving_school"],
+    "kindergarten": ["amenity=kindergarten", "amenity=nursery"],
+    "tutoring": ["amenity=tutoring", "office=tutoring"],
+    "training center": ["amenity=training_center", "office=training"],
+
+    # Entertainment & Culture
+    "cinema": ["amenity=cinema", "leisure=cinema"],
+    "theatre": ["amenity=theatre", "leisure=theatre"],
+    "museum": ["tourism=museum", "amenity=museum"],
+    "nightclub": ["amenity=nightclub", "leisure=nightclub"],
+    "bowling": ["leisure=bowling_alley", "amenity=bowling_alley"],
+    "amusement park": ["leisure=amusement_park", "tourism=theme_park"],
+
+    # Shopping & Retail
+    "supermarket": ["shop=supermarket", "shop=grocery"],
+    "grocery": ["shop=grocery", "shop=supermarket", "shop=convenience"],
+    "convenience store": ["shop=convenience", "shop=grocery"],
+    "clothing store": ["shop=clothes", "shop=fashion"],
+    "bookstore": ["shop=books", "shop=stationery"],
+    "electronics store": ["shop=electronics", "shop=computer"],
+    "furniture store": ["shop=furniture", "shop=home_improvement"],
+    "hardware store": ["shop=hardware", "shop=doityourself"],
+    "pharmacy": ["shop=chemist", "amenity=pharmacy"],
+    "gift shop": ["shop=gift", "shop=novelty"],
+    "jewelry": ["shop=jewelry", "shop=watches"],
+    "shoe store": ["shop=shoes", "shop=clothes"],
+    "sporting goods": ["shop=sports", "shop=outdoor"],
+    "department store": ["shop=department_store", "shop=mall"],
+
+    # Professional Services
+    "photographer": ["shop=photographer", "office=photographer"],
+    "travel agency": ["shop=travel_agency", "office=travel_agent"],
+    "printing": ["shop=copying", "shop=printing"],
+    "laundry": ["shop=laundry", "shop=dry_cleaning", "amenity=laundry"],
+    "dry cleaning": ["shop=dry_cleaning", "shop=laundry"],
+    "moving": ["shop=moving", "office=moving"],
+    "electrician": ["office=electrician", "shop=electrician"],
+    "plumber": ["office=plumber", "shop=plumber"],
+
+    # Logistics & Transport
+    "logistics": ["office=logistics", "office=transport", "amenity=logistics"],
+    "courier": ["office=courier", "amenity=courier"],
+    "delivery": ["office=delivery", "amenity=delivery"],
+    "freight": ["office=freight", "office=logistics"],
+    "warehouse": ["building=warehouse", "office=warehouse"],
+    "shipping": ["office=shipping", "office=logistics"],
+
+    # Home Services
+    "cleaning": ["office=cleaning", "shop=cleaning"],
+    "gardening": ["shop=garden_centre", "office=gardening"],
+    "landscaping": ["office=landscaping", "office=gardening"],
+    "construction": ["office=construction", "building=construction"],
+    "contractor": ["office=contractor", "office=construction"],
+    "renovation": ["office=renovation", "office=construction"],
+    "interior design": ["office=interior_design", "shop=interior_design"],
+    "pest control": ["office=pest_control", "shop=pest_control"],
+    "security": ["office=security", "shop=security"],
+
+    # Events & Hospitality
+    "event planning": ["office=event_planner", "office=events"],
+    "wedding planner": ["office=wedding_planner", "office=event_planner"],
+    "catering": ["amenity=catering", "office=catering"],
+    "food truck": ["amenity=food_truck", "amenity=fast_food"],
+    "party rental": ["shop=party_supplies", "office=party_rental"],
+}
+
+def get_osm_tag_queries(niche: str, bbox_coords) -> str:
+    """Build tag-specific Overpass sub-queries from the niche mapping."""
+    niche_lower = niche.lower().strip()
+    tags = []
+    
+    # Check full niche phrase first
+    if niche_lower in NICHE_OSM_TAGS:
+        tags.extend(NICHE_OSM_TAGS[niche_lower])
+    
+    # Check individual keywords
+    keywords = extract_niche_keywords(niche)
+    for kw in keywords:
+        if kw in NICHE_OSM_TAGS:
+            for tag in NICHE_OSM_TAGS[kw]:
+                if tag not in tags:
+                    tags.append(tag)
+    
+    if not tags:
+        return ""
+    
+    south, north, west, east = bbox_coords
+    lines = []
+    for tag_val in tags:
+        if "=" in tag_val:
+            tag_key, tag_value = tag_val.split("=", 1)
+            lines.append(f'      node["{tag_key}"="{tag_value}"]({south},{west},{north},{east});')
+            lines.append(f'      way["{tag_key}"="{tag_value}"]({south},{west},{north},{east});')
+            lines.append(f'      relation["{tag_key}"="{tag_value}"]({south},{west},{north},{east});')
+    
+    return "\n".join(lines)
+
+
 # ─── Overpass Query Builder (Dynamic — works for ANY niche) ──────────────────────
 
 def build_overpass_queries(bbox: list, niche: str) -> tuple:
     """
     Build dynamic Overpass queries for a generic business niche.
 
-    Uses a multi-phase approach:
+    Uses a multi-phase approach with smart tag mapping + parallel queries:
+    Phase 0: Tag-specific queries from niche→OSM tag mapping (most precise)
     Phase 1: Name-based matching + tag-value matching across all business types
-    Phase 2: Broad catch-all for any element with a website
+    Phase 2: Ultra-broad catch-all for any element with name+website in the bbox
 
     The niche string is split into keywords, and the query matches:
+    - Businesses whose OSM TAG:VALUE matches the niche (e.g., leisure=fitness_centre for "fitness")
     - Businesses whose NAME contains any niche keyword
-    - Businesses whose TAG VALUES match niche keywords (e.g., leisure=fitness_centre for "fitness")
     - Businesses with relevant industry tags
+    - Any element with a name+website in the bbox (broadest possible)
     """
     south, north, west, east = bbox
 
@@ -1201,7 +1489,6 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
         raise ValueError(f"No valid keywords extracted from niche: '{niche}'")
 
     # Build regex patterns
-    # Escape special regex characters in keywords
     escaped_keywords = [re.escape(k) for k in keywords]
     name_pattern = "|".join(escaped_keywords)
 
@@ -1225,7 +1512,6 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
             if i > 0:
                 print(f"    Retrying with fallback server...")
 
-            # Try with descriptive UA first
             for attempt, headers in [(1, OVERPASS_HEADERS), (2, _OVERPASS_FALLBACK_HEADERS)]:
                 if attempt == 2:
                     print(f"         Trying Chrome UA fallback...")
@@ -1241,24 +1527,30 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
                 except requests.RequestException as e:
                     status = getattr(e, 'response', None) and e.response.status_code
                     if status == 406 and attempt == 1:
-                        # 406 with descriptive UA — try Chrome UA on same endpoint
                         continue
                     if status == 406 and attempt == 2:
-                        # Both UAs got 406 on this endpoint — move to next
                         print(f"  {_WARN} Endpoint {endpoint} refused both User-Agents (406)")
                         last_error = e
-                        break  # break inner loop, continue to next endpoint
+                        break
                     if status:
                         print(f"  {_WARN} Endpoint {endpoint} failed: {e}")
                         print(f"        Status: {status}")
                     else:
                         print(f"  {_WARN} Endpoint {endpoint} failed: {e}")
                     last_error = e
-                    break  # break inner loop, continue to next endpoint
+                    break
 
         raise RuntimeError(f"All {len(OVERPASS_ENDPOINTS)} Overpass endpoints failed: {last_error}")
 
-    # ── Phase 1: Name-based + tag-specific queries ──
+    # ── Phase 0: Tag-specific queries from smart niche mapping ──
+    # This catches businesses even when their name doesn't contain the niche word
+    tag_query = get_osm_tag_queries(niche, bbox)
+    if tag_query:
+        print(f"  {_ARROW} Searching with smart tag mapping for '{niche}'...")
+    else:
+        print(f"  {_ARROW} No tag mapping found for '{niche}' — using name-based search.")
+
+    # ── Phase 1: Name-based + tag-value matching ──
     print(f"  {_ARROW} Searching for '{niche}' businesses by name and tags...")
     name_based_query = f"""
       // All office types with name matching the niche
@@ -1294,41 +1586,70 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
       node["office"]["industry"~"{name_pattern}",i]({south},{west},{north},{east});
       way["office"]["industry"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      // Direct tag-value matching (e.g., leisure=fitness_centre for "fitness")
-      // This catches entities where the tag value itself matches the niche
+      // Direct tag-value matching
       node[~"^(amenity|shop|office|leisure|sport|healthcare|tourism|catering)$"~"{name_pattern}",i]({south},{west},{north},{east});
       way[~"^(amenity|shop|office|leisure|sport|healthcare|tourism|catering)$"~"{name_pattern}",i]({south},{west},{north},{east});
 
-      // Any company offices (common in less-detailed regions)
+      // Any company offices
       node["office"="company"]({south},{west},{north},{east});
       way["office"="company"]({south},{west},{north},{east});
       relation["office"="company"]({south},{west},{north},{east});
+
+      // Tag-specific queries from smart mapping
+      {tag_query}
     """
 
-    elements = _run_overpass(name_based_query)
-    print(f"\n{_INFO} Found {len(elements)} candidates from name/tag-based queries.")
-
-    # ── Phase 2: Broad catch-all for global coverage ──
-    print(f"     Running broader catch-all query for global coverage...")
+    # ── Phase 2: Ultra-broad catch-all for ANY element with name+website ──
+    # This is the safety net — grabs anything in the bbox with a name and website
     catchall_query = f"""
-      // Any element with a website and name matching the niche
-      node["name"~"{name_pattern}",i]["website"~"."]({south},{west},{north},{east});
-      way["name"~"{name_pattern}",i]["website"~"."]({south},{west},{north},{east});
-      relation["name"~"{name_pattern}",i]["website"~"."]({south},{west},{north},{east});
+      // ANY element with a name AND website tag (broadest possible)
+      node["name"]["website"~"."]({south},{west},{north},{east});
+      way["name"]["website"~"."]({south},{west},{north},{east});
+      relation["name"]["website"~"."]({south},{west},{north},{east});
 
-      // Any office with a website (even without name matching — catches generic offices)
-      node["office"]["website"~"."]({south},{west},{north},{east});
-      way["office"]["website"~"."]({south},{west},{north},{east});
-      relation["office"]["website"~"."]({south},{west},{north},{east});
+      // ANY element with name and contact:website
+      node["name"]["contact:website"~"."]({south},{west},{north},{east});
+      way["name"]["contact:website"~"."]({south},{west},{north},{east});
+      relation["name"]["contact:website"~"."]({south},{west},{north},{east});
 
-      // Any company office with a website
-      node["office"="company"]["website"~"."]({south},{west},{north},{east});
-      way["office"="company"]["website"~"."]({south},{west},{north},{east});
-      relation["office"="company"]["website"~"."]({south},{west},{north},{east});
+      // Commercial/retail buildings with name
+      node["building"="commercial"]["name"~"."]({south},{west},{north},{east});
+      way["building"="commercial"]["name"~"."]({south},{west},{north},{east});
+      node["building"="retail"]["name"~"."]({south},{west},{north},{east});
+      way["building"="retail"]["name"~"."]({south},{west},{north},{east});
+      node["building"="office"]["name"~"."]({south},{west},{north},{east});
+      way["building"="office"]["name"~"."]({south},{west},{north},{east});
+
+      // Landuse commercial areas
+      relation["landuse"="commercial"]({south},{west},{north},{east});
+      way["landuse"="commercial"]({south},{west},{north},{east});
     """
-    extra_elements = _run_overpass(catchall_query)
 
-    # Deduplicate by element id, keep elements from name-based query first
+    # Run Phase 1 and Phase 2 IN PARALLEL (cuts total time in half)
+    print(f"     Running name-based + catch-all queries in parallel...")
+    elements = []
+    extra_elements = []
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            executor.submit(_run_overpass, name_based_query): "phase1",
+            executor.submit(_run_overpass, catchall_query): "phase2",
+        }
+        for future in as_completed(futures):
+            phase = futures[future]
+            try:
+                result = future.result()
+                if phase == "phase1":
+                    elements = result
+                    print(f"\n{_INFO} Found {len(elements)} candidates from name/tag-based queries.")
+                else:
+                    extra_elements = result
+            except Exception as e:
+                print(f"  {_WARN} Phase {phase} query failed: {e}")
+
+    print(f"     Running broader catch-all query for global coverage...")
+
+    # Deduplicate by element id
     seen_ids = {(el.get("type", ""), el.get("id")) for el in elements}
     for el in extra_elements:
         key = (el.get("type", ""), el.get("id"))
@@ -1336,7 +1657,7 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
             seen_ids.add(key)
             elements.append(el)
 
-    print(f"{_INFO} Total candidates after catch-all: {len(elements)}")
+    print(f"{_INFO} Total candidates after all queries: {len(elements)}")
 
     return elements
 
@@ -1510,6 +1831,14 @@ def main():
     # Step 3: Search HERE API (if API key is available — 30k free req/mo)
     here_results = here_search(niche, location, limit=min(100, target_count or 100))
 
+    # Step 3b: Google organic search (free, no API key needed)
+    print(f"\n{_ARROW} Searching Google for '{niche}' businesses (organic results)...")
+    google_results = search_google_businesses(niche, location, limit=50)
+    if google_results:
+        print(f"  {_INFO} Google found {len(google_results)} potential businesses.")
+    else:
+        print(f"       No businesses found via Google search.")
+
     # Step 4: Scrape websites for emails, phones, and WhatsApp
     results = []
     skipped_no_name = 0
@@ -1518,6 +1847,7 @@ def main():
     skipped_no_email = 0
     errors = 0
     here_count = 0
+    google_count = 0
 
     # Build CSV filename: {niche}_{location}.csv
     clean_location = re.sub(r'[\\/*?:"<>|, ]', '_', location).strip('_')
@@ -1545,12 +1875,10 @@ def main():
     for biz in here_results:
         biz_name = biz["name"]
         biz_website = biz["website"]
-        # Dedup against OSM results by checking if name already exists
         name_lower = biz_name.lower().strip()
         if name_lower in here_names:
             continue
         here_names.add(name_lower)
-        # Check if a similar name exists in OSM results
         already_have = any(
             name_lower == n.lower().strip() or
             name_lower in n.lower() or n.lower() in name_lower
@@ -1562,6 +1890,30 @@ def main():
 
     if here_count > 0:
         print(f"\n{_INFO} Added {here_count} unique {'business' if here_count == 1 else 'businesses'} from HERE.")
+
+    # Add Google results (dedup by name/domain with OSM & HERE)
+    google_names = set()
+    for biz in google_results:
+        biz_name = biz["name"]
+        biz_website = biz["website"]
+        biz_domain = urlparse(biz_website).netloc.lower()
+        name_lower = biz_name.lower().strip()
+        if name_lower in google_names:
+            continue
+        google_names.add(name_lower)
+        # Check if a similar name or same domain exists in existing results
+        already_have = any(
+            name_lower == n.lower().strip() or
+            biz_domain == urlparse(w).netloc.lower() or
+            name_lower in n.lower() or n.lower() in name_lower
+            for n, w, _ in valid_companies
+        )
+        if not already_have:
+            valid_companies.append((biz_name, biz_website, "Google"))
+            google_count += 1
+
+    if google_count > 0:
+        print(f"\n{_INFO} Added {google_count} unique {'business' if google_count == 1 else 'businesses'} from Google search.")
 
     total_valid = len(valid_companies)
     if total_valid == 0:
