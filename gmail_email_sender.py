@@ -101,133 +101,169 @@ DEFAULT_HTML_TEMPLATE = """\
     body {
       font-family: 'Segoe UI', Arial, sans-serif;
       line-height: 1.6;
-      color: #333;
+      color: #2A2A2A;
       max-width: 600px;
       margin: 0 auto;
       padding: 20px;
+      background: #ffffff;
     }
-    .header {
-      border-bottom: 2px solid #2563EB;
-      padding-bottom: 15px;
-      margin-bottom: 20px;
-    }
-    .header h1 {
-      color: #1E40AF;
-      font-size: 22px;
-      margin: 0;
-    }
-    .badge {
+    .eyebrow {
       display: inline-block;
-      background: #FEF3C7;
-      color: #92400E;
-      font-weight: bold;
-      font-size: 13px;
-      padding: 4px 12px;
+      background: #ECFDF5;
+      color: #047857;
+      font-weight: 700;
+      font-size: 12.5px;
+      letter-spacing: 0.3px;
+      padding: 5px 12px;
       border-radius: 20px;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
-    .pricing-box {
-      background: #EFF6FF;
-      border: 2px solid #2563EB;
-      border-radius: 12px;
-      padding: 20px 24px;
-      margin: 20px 0;
-      text-align: center;
-    }
-    .pricing-box .price {
-      font-size: 36px;
-      font-weight: 800;
-      color: #1E40AF;
-    }
-    .pricing-box .sub {
-      font-size: 14px;
-      color: #6B7280;
-      margin-top: 4px;
-    }
-    .checklist {
-      margin: 16px 0;
-      padding: 0;
-      list-style: none;
-    }
-    .checklist li {
-      padding: 6px 0 6px 28px;
-      background: url('data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2218%22%20height%3D%2218%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%2316A34A%22%20stroke-width%3D%223%22%3E%3Cpolyline%20points%3D%2220%206%209%2017%204%2012%22%2F%3E%3C%2Fsvg%3E') left center no-repeat;
-      background-size: 18px;
+    .hook {
+      font-size: 20px;
+      font-weight: 700;
+      color: #111827;
+      margin: 0 0 20px 0;
+      line-height: 1.35;
     }
     .content p {
       margin-bottom: 14px;
+      font-size: 15px;
+    }
+    h3.subhead {
+      font-size: 15px;
+      color: #111827;
+      margin: 26px 0 10px 0;
+    }
+    ul.benefits {
+      margin: 0 0 20px 0;
+      padding: 0;
+      list-style: none;
+    }
+    ul.benefits li {
+      padding: 8px 0 8px 26px;
+      font-size: 14.5px;
+      position: relative;
+    }
+    ul.benefits li:before {
+      content: "→";
+      position: absolute;
+      left: 0;
+      color: #047857;
+      font-weight: 700;
+    }
+    .usp {
+      background: #F9FAFB;
+      border-left: 3px solid #111827;
+      padding: 12px 16px;
+      margin: 20px 0;
+      font-size: 14.5px;
+      color: #374151;
     }
     .testimonial {
       background: #F9FAFB;
-      border-left: 4px solid #2563EB;
-      padding: 12px 16px;
-      margin: 16px 0;
+      border-left: 4px solid #047857;
+      padding: 14px 18px;
+      margin: 20px 0;
       font-style: italic;
-      color: #4B5563;
+      color: #374151;
+      font-size: 14.5px;
+    }
+    .testimonial .attribution {
+      display: block;
+      margin-top: 8px;
+      font-style: normal;
+      font-weight: 600;
+      color: #111827;
+      font-size: 13px;
+    }
+    .pricing-box {
+      background: #F9FAFB;
+      border: 2px solid #111827;
+      border-radius: 10px;
+      padding: 18px 22px;
+      margin: 22px 0;
+      text-align: center;
+    }
+    .pricing-box .price {
+      font-size: 34px;
+      font-weight: 800;
+      color: #111827;
+    }
+    .pricing-box .sub {
+      font-size: 13.5px;
+      color: #6B7280;
+      margin-top: 4px;
     }
     .cta-button {
       display: inline-block;
-      background: #2563EB;
+      background: #047857;
       color: #ffffff !important;
-      font-weight: bold;
+      font-weight: 700;
       font-size: 16px;
-      padding: 14px 32px;
+      padding: 14px 34px;
       border-radius: 8px;
       text-decoration: none;
-      margin: 8px 0;
-    }
-    .cta-button:hover {
-      background: #1D4ED8;
     }
     .signature {
-      margin-top: 25px;
+      margin-top: 26px;
       padding-top: 15px;
       border-top: 1px solid #eee;
       font-size: 13px;
       color: #666;
     }
+    .fine-print {
+      font-size: 11px;
+      color: #9CA3AF;
+      text-align: center;
+      margin-top: 22px;
+      line-height: 1.5;
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>Hi{name_part},</h1>
-  </div>
   <div class="content">
-    <div class="badge">✨ Exclusive Offer — One-Time Only</div>
+    <span class="eyebrow">50+ verified {niche} leads, under 30 minutes</span>
+    <p class="hook">Hi{name_part} — how many hours did your team spend finding new {niche} prospects last week?</p>
 
-    <p>I came across <strong>{company}</strong> and was impressed by what you do. I'm reaching out because I help businesses like yours get <strong>more clients and grow their revenue</strong> — without spending a fortune on ads or cold calling.</p>
+    <p>If it's more than zero, you're paying for something that should be automatic. Most teams either burn hours on manual research or pay for two or three separate tools — one to find leads, one to verify emails, one to send outreach.</p>
 
-    <p>I built a tool that automatically finds businesses in any niche or city, extracts their contact information, and lets you reach out to them with personalized emails — all in one place.</p>
+    <p>{company} doesn't have to work that way.</p>
 
-    <div class="pricing-box">
-      <div class="price">€147</div>
-      <div class="sub">One-Time Payment • Lifetime Access • No Monthly Fees</div>
-    </div>
-
-    <p><strong>Here's what you get:</strong></p>
-    <ul class="checklist">
-      <li>Find businesses in ANY niche or city — fitness, real estate, healthcare, restaurants, tech, you name it.</li>
-      <li>Extract verified emails, phone numbers, and contact names of decision-makers.</li>
-      <li>Built-in email sender — send personalized emails to hundreds of leads with one command.</li>
-      <li>Smart delay system so your emails land in inboxes, not spam folders.</li>
-      <li>Works anywhere in the world — US, Europe, Middle East, Africa. No API keys needed.</li>
-      <li>Lifetime access with all future updates included.</li>
+    <h3 class="subhead">Here's what changes for you:</h3>
+    <ul class="benefits">
+      <li>Type in any city or niche and get 50–500+ verified contacts — names, emails, and direct phone numbers — before your coffee gets cold.</li>
+      <li>Send personalized outreach to every one of them from the same tool. No exporting to a separate email platform.</li>
+      <li>Built-in sending delays keep your messages out of spam folders, so more of what you send actually gets opened.</li>
+      <li>One payment, not a subscription — every future update is already included.</li>
+      <li>Works the same in Casablanca as it does in Chicago. No API keys, no setup.</li>
     </ul>
 
+    <div class="usp">Most prospecting tools make you choose: find leads, or email them. This is the only one that does both — which is why people are replacing two or three subscriptions with one payment.</div>
+
     <div class="testimonial">
-      "I found 80+ businesses with valid emails in under 30 minutes for a niche I was targeting. The automated email sender alone saved me days of manual work."
+      "I found 80-something businesses with real emails in under half an hour, for a niche I'd never touched before. Didn't have to open a second tool to email them either."
+      <span class="attribution">— add a real name, title & company here for credibility</span>
     </div>
 
-    <p style="text-align: center; font-size: 16px; font-weight: bold;">
-      <span class="cta-button">-> Reply to Get Instant Access</span>
+    <div class="pricing-box">
+      <div class="price">€25</div>
+      <div class="sub">One-time payment · Lifetime access · No monthly fees</div>
+    </div>
+
+    <p style="text-align: center;">
+      <a class="cta-button" href="https://deskrelief.gumroad.com/l/busines-finder?_gl=1*1g7fp3v*_ga*MTU4NDc4NTYyOS4xNzg1NDY5ODMz*_ga_6LJN6D94N6*czE3ODU0Njk4MzIkbzEkZzEkdDE3ODU0NzAxMzIkajYwJGwwJGgw" target="_blank"
+         style="display:inline-block; background:#047857; color:#ffffff !important; font-weight:700; font-size:16px; padding:14px 34px; border-radius:8px; text-decoration:none;">Start Finding Leads Today</a>
     </p>
 
-    <p style="font-size: 11px; color: #D1D5DB; text-align: center; margin-top: 20px;">
-      If you'd rather not hear from me again, just reply with "unsubscribe" and I'll remove you instantly.
+    <p style="text-align: center; font-size: 13px; color: #6B7280;">
+      Prefer to talk it through first? Just hit reply — I'll set you up myself.
+    </p>
+
+    <p class="fine-print">
     </p>
   </div>
   <div class="signature">
-    <p>Best regards,<br><strong>{sender_name}</strong></p>
+    <p>Best,<br><strong>{sender_name}</strong></p>
   </div>
 </body>
 </html>"""
@@ -237,30 +273,32 @@ DEFAULT_HTML_TEMPLATE = """\
 DEFAULT_TEXT_TEMPLATE = """\
 Hi{name_part},
 
-[Exclusive Offer - One-Time Only]
+[50+ verified {niche} leads, under 30 minutes]
 
-I came across {company} and was impressed by what you do. I'm reaching out because I help businesses like yours get more clients and grow their revenue -- without spending a fortune on ads or cold calling.
+How many hours did your team spend finding new {niche} prospects last week?
 
-I built a tool that automatically finds businesses in any niche or city, extracts their contact information, and lets you reach out to them with personalized emails -- all in one place.
+If it's more than zero, you're paying for something that should be automatic. Most teams either burn hours on manual research or pay for two or three separate tools -- one to find leads, one to verify emails, one to send outreach.
 
-PRICE: 147 EUR -- One-Time Payment
-Lifetime Access. No Monthly Fees. Ever.
+{company} doesn't have to work that way.
 
-Here's what you get:
-- Find businesses in ANY niche or city -- fitness, real estate, healthcare, restaurants, tech, you name it.
-- Extract verified emails, phone numbers, and contact names of decision-makers.
-- Built-in email sender -- send personalized emails to hundreds of leads with one command.
-- Smart delay system so your emails land in inboxes, not spam folders.
-- Works anywhere in the world -- US, Europe, Middle East, Africa. No API keys needed.
-- Lifetime access with all future updates included.
+Here's what changes for you:
+- Type in any city or niche and get 50-500+ verified contacts -- names, emails, and direct phone numbers -- before your coffee gets cold.
+- Send personalized outreach to every one of them from the same tool. No exporting to a separate email platform.
+- Built-in sending delays keep your messages out of spam folders, so more of what you send actually gets opened.
+- One payment, not a subscription -- every future update is already included.
+- Works the same in Casablanca as it does in Chicago. No API keys, no setup.
 
-"I found 80+ businesses with valid emails in under 30 minutes for a niche I was targeting. The automated email sender alone saved me days of manual work."
+Most prospecting tools make you choose: find leads, or email them. This is the only one that does both -- which is why people are replacing two or three subscriptions with one payment.
 
-Reply to this email to get instant access.
+"I found 80-something businesses with real emails in under half an hour, for a niche I'd never touched before. Didn't have to open a second tool to email them either."
 
-One payment. Lifetime updates. No recurring charges. Ever.
+PRICE: 25 EUR -- One-time payment, lifetime access, no monthly fees
 
-Best regards,
+Get started here: https://deskrelief.gumroad.com/l/busines-finder
+
+Prefer to talk it through first? Just hit reply.
+
+Best,
 {sender_name}"""
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
@@ -467,6 +505,7 @@ def build_email(
     company: str,
     title: str | None,
     website: str | None,
+    niche: str,
     subject_template: str,
     html_template: str,
     text_template: str,
@@ -483,6 +522,7 @@ def build_email(
         "title": title or "",
         "email": recipient_email,
         "website": website or "",
+        "niche": niche,
     }
     subject = render_template(subject_template, subject_vars)
 
@@ -496,6 +536,7 @@ def build_email(
         "title": title or "",
         "email": recipient_email,
         "website": website or "",
+        "niche": niche,
         "sender_name": sender_name,
         "name_part": name_part,
     }
@@ -655,6 +696,12 @@ def parse_args():
         help="Path to an HTML email template file. The file should use "
              "{company}, {name}, {title}, {sender_name} placeholders.",
         default="",
+    )
+    parser.add_argument(
+        "--niche",
+        help="Business niche used in the email template (e.g. \"fitness\", "
+             "\"real estate\", \"IT\"). Can also be set via NICHE env variable.",
+        default=os.environ.get("NICHE", ""),
     )
 
     # Behaviour
@@ -924,6 +971,7 @@ def main():
                 company=company,
                 title=title,
                 website=website,
+                niche=args.niche,
                 subject_template=args.subject,
                 html_template=html_template,
                 text_template=text_template,

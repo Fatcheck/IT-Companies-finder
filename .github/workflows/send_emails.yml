@@ -22,6 +22,11 @@ on:
         required: false
         default: 'Business opportunity for {company}'
         type: string
+      niche:
+        description: 'Business niche used in the email template (e.g. "fitness", "real estate", "IT")'
+        required: false
+        default: ''
+        type: string
       delay_min:
         description: 'Min delay in seconds between sends'
         required: false
@@ -60,6 +65,7 @@ jobs:
           python gmail_email_sender.py \
             "${{ inputs.csv_file }}" \
             --subject "${{ inputs.subject }}" \
+            --niche "${{ inputs.niche }}" \
             --limit "${{ inputs.limit }}" \
             --delay-min "${{ inputs.delay_min }}" \
             --delay-max "${{ inputs.delay_max }}" \
