@@ -1,0 +1,92 @@
+name: Send Emails
+
+on:
+  workflow_dispatch:
+    inputs:
+      csv_file:
+        description: 'Path to the CSV file with contacts (e.g. businesses.csv, or the CSV committed by the Scrape workflow)'
+        required: true
+        type: string
+      preview:
+        description: 'Preview mode — show what would be sent, send nothing'
+        required: false
+        default: true
+        type: boolean
+      limit:
+        description: 'Max emails to send (0 = unlimited)'
+        required: false
+        default: '10'
+        type: string
+      subject:
+        description: 'Subject template (e.g. "Business opportunity for {company}")'
+        required: false
+        default: 'Business opportunity for {company}'
+        type: string
+      delay_min:
+        description: 'Min delay in seconds between sends'
+        required: false
+        default: '30'
+        type: string
+      delay_max:
+        description: 'Max delay in seconds between sends'
+        required: false
+        default: '60'
+        type: string
+
+env:
+  PYTHONUNBUFFERED: 1
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max (GitHub limit)
+    permissions:
+      contents: write  # needed for the commit-back step
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The sender only uses the Python standard library (smtplib, email, csv)
+      # so no pip install is required.
+
+      - name: Run Email Sender
+        run: |
+          python gmail_email_sender.py \
+            "${{ inputs.csv_file }}" \
+            --subject "${{ inputs.subject }}" \
+            --limit "${{ inputs.limit }}" \
+            --delay-min "${{ inputs.delay_min }}" \
+            --delay-max "${{ inputs.delay_max }}" \
+            ${{ inputs.preview && '--preview' || '' }}
+        env:
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+
+      - name: Upload sent log (artifact - download from Actions tab)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sent-emails-log-${{ github.run_id }}
+          path: "sent_emails_log.csv"
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Commit sent log back to repository
+        run: |
+          # Only commit when a log file was actually produced
+          ls sent_emails_log.csv 2>/dev/null || exit 0
+
+          # Configure git for the commit
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add and commit the log (skip push if nothing changed)
+          git add sent_emails_log.csv
+          git diff --cached --quiet && exit 0
+          git commit -m "Update sent emails log [skip ci]"
+          git push
