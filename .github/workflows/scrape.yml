@@ -59,6 +59,13 @@ jobs:
           MAX_WORKERS: ${{ inputs.workers }}
           MAX_PAGES_PER_SITE: ${{ inputs.pages }}
 
+      - name: Clean results with Super Clean
+        run: |
+          # Scrub junk emails and drop companies with no valid email.
+          # Overwrites the finder's CSV in place, so the committed file
+          # is the cleaned list (the sender then uses the same file).
+          python super_clean.py --in-place --csv-dir .
+
       - name: Upload CSV results (artifact - download from Actions tab)
         uses: actions/upload-artifact@v4
         with:
