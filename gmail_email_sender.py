@@ -348,8 +348,16 @@ def get_contact_email(row: dict) -> str | None:
     return None
 
 
-def is_valid_target_email(email: str) -> bool:
-    """Check if an email is a valid target for sending (not junk/spam)."""
+def is_valid_target_email(email: str, strict: bool = False) -> bool:
+    """
+    Check if an email is a valid target for sending (not junk/spam).
+
+    When strict=True, additionally rejects:
+      - single-letter local parts (e.g. a@domain.com)
+      - short domains (e.g. x.com)
+      - hash-like locals (long hex strings)
+      - CSS-class-style locals (e.g. "20background")
+    """
     email = email.strip().lower()
 
     # Must have @ and a proper domain
@@ -383,6 +391,28 @@ def is_valid_target_email(email: str) -> bool:
     # Reject non-ASCII characters in email (rarely valid for business SMTP)
     if not _can_encode_ascii(email):
         return False
+
+    # ── Strict-mode extra checks (used by super_clean.py --strict) ──
+    if strict:
+        # "@" is guaranteed present (checked above)
+        local = email.split("@", 1)[0]
+
+        # Single-letter locals (a@domain.com) are almost always scraped junk
+        if len(local) < 2:
+            return False
+
+        # Hash-like locals (long hex strings, e.g. deadbeef@domain.com)
+        if re.fullmatch(r'[a-f0-9]{6,}', local):
+            return False
+
+        # CSS-class-style locals (e.g. "20background")
+        if re.match(r'^\d+[a-z]', local):
+            return False
+
+        # Short domains (e.g. "x.com") are almost always placeholders.
+        # Note: this can also drop rare short-but-real domains like as.com.
+        if len(domain) < 6:
+            return False
 
     return True
 
