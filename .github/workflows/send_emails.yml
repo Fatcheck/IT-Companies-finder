@@ -27,6 +27,16 @@ on:
         required: false
         default: ''
         type: string
+      verify:
+        description: 'Check each email exists (MX + SMTP) before sending — prevents "Address not found" bounces'
+        required: false
+        default: true
+        type: boolean
+      verify_strict:
+        description: 'Also drop emails the mail server would not confirm (fewest bounces, may lose some leads)'
+        required: false
+        default: false
+        type: boolean
       delay_min:
         description: 'Min delay in seconds between sends'
         required: false
@@ -60,10 +70,25 @@ jobs:
       # The sender only uses the Python standard library (smtplib, email, csv)
       # so no pip install is required.
 
+      - name: Verify emails (deliverability check)
+        if: inputs.verify
+        run: |
+          # Check MX records + SMTP mailbox existence so we only send to
+          # addresses that can actually receive mail. The script writes
+          # verified_<name>.csv next to the source (same dir), plus a report;
+          # SEND_CSV then points the sender at the verified file.
+          python verify_emails.py "${{ inputs.csv_file }}" ${{ inputs.verify_strict && '--strict' || '' }}
+          SEND_CSV="$(dirname "${{ inputs.csv_file }}")/verified_$(basename "${{ inputs.csv_file }}")"
+          echo "SEND_CSV=$SEND_CSV" >> "$GITHUB_ENV"
+
+      - name: Use original CSV (verification off)
+        if: ${{ !inputs.verify }}
+        run: echo "SEND_CSV=${{ inputs.csv_file }}" >> "$GITHUB_ENV"
+
       - name: Run Email Sender
         run: |
           python gmail_email_sender.py \
-            "${{ inputs.csv_file }}" \
+            "$SEND_CSV" \
             --subject "${{ inputs.subject }}" \
             --niche "${{ inputs.niche }}" \
             --limit "${{ inputs.limit }}" \

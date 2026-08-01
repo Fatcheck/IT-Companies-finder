@@ -410,6 +410,12 @@ def is_valid_target_email(email: str, strict: bool = False) -> bool:
         "slick-carousel", "whatwg-fetch", "webpack",
         "example.com", "domain.com", "yourdomain.com",
         "mijnwebsite.com", "provider.com",
+        # Common placeholder domains scraped from site templates (Wix etc.).
+        # Anchored with @ so real domains merely containing the word (e.g.
+        # counterexample.org) are not dropped.
+        "@mysite.com", "@yoursite.com", "@yourwebsite.com", "@mywebsite.com",
+        "@placeholder.com", "@example.org", "@example.net", "@yourcompany.com",
+        "@mycompany.com",
         # Hex hash patterns (sentry-like)
         r'^[a-f0-9]{32}@',
         r'^[a-f0-9]{8,}@',
