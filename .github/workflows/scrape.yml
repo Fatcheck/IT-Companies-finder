@@ -34,6 +34,8 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 360  # 6 hours max (GitHub limit)
+    permissions:
+      contents: write  # needed for the commit-back step
 
     steps:
       - name: Checkout repository
@@ -76,14 +78,31 @@ jobs:
 
       - name: Commit CSVs back to repository
         run: |
-          # Check if any CSV files exist
-          ls *.csv 2>/dev/null || exit 0
-          
+          # Stop early when the finder produced no CSVs.
+          shopt -s nullglob
+          csv_files=(*.csv)
+          if [ "${#csv_files[@]}" -eq 0 ]; then
+            echo "No CSV files found - nothing to commit."
+            exit 0
+          fi
+
           # Configure git for the commit
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Add and commit CSV files
-          git add *.csv
-          git diff --cached --quiet || git commit -m "Add CSV results for ${{ inputs.niche }} / ${{ inputs.location }} [skip ci]"
-          git push
+
+          # Stage the CSVs
+          git add -- *.csv
+
+          # Commit only when there is something to commit. The message is fed
+          # through stdin (-F -) so the niche/location text and the [skip ci]
+          # marker can never be parsed as git arguments or pathspecs.
+          if ! git diff --cached --quiet; then
+            printf 'Add CSV results for %s / %s [skip ci]\n' "$NICHE" "$LOCATION" | git commit -F -
+            git push
+            echo "Committed and pushed CSV results."
+          else
+            echo "No changes to commit - CSVs already up to date."
+          fi
+        env:
+          NICHE: ${{ inputs.niche }}
+          LOCATION: ${{ inputs.location }}
