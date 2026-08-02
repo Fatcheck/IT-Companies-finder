@@ -193,8 +193,32 @@ HERE_DISCOVER_URL = "https://discover.search.hereapi.com/v1/discover"
 # Known country codes for phone number handling
 # Format: {code: {"name": ..., "min_digits": remaining digits needed after country code}}
 COUNTRY_CODES = {
+    # North America
     "1": {"name": "US/Canada", "min_digits": 10},
+    "52": {"name": "Mexico", "min_digits": 10},
+    # Europe
     "49": {"name": "Germany", "min_digits": 10},
+    "44": {"name": "United Kingdom", "min_digits": 9},
+    "33": {"name": "France", "min_digits": 9},
+    "34": {"name": "Spain", "min_digits": 9},
+    "39": {"name": "Italy", "min_digits": 9},
+    "31": {"name": "Netherlands", "min_digits": 9},
+    "32": {"name": "Belgium", "min_digits": 9},
+    "41": {"name": "Switzerland", "min_digits": 9},
+    "43": {"name": "Austria", "min_digits": 9},
+    "48": {"name": "Poland", "min_digits": 9},
+    "46": {"name": "Sweden", "min_digits": 9},
+    "47": {"name": "Norway", "min_digits": 8},
+    "45": {"name": "Denmark", "min_digits": 8},
+    "358": {"name": "Finland", "min_digits": 9},
+    "351": {"name": "Portugal", "min_digits": 9},
+    "353": {"name": "Ireland", "min_digits": 9},
+    "30": {"name": "Greece", "min_digits": 10},
+    "36": {"name": "Hungary", "min_digits": 9},
+    "40": {"name": "Romania", "min_digits": 9},
+    "420": {"name": "Czech Republic", "min_digits": 9},
+    "421": {"name": "Slovakia", "min_digits": 9},
+    # GCC / Middle East
     "212": {"name": "Morocco", "min_digits": 9},
     "213": {"name": "Algeria", "min_digits": 9},
     "966": {"name": "Saudi Arabia", "min_digits": 9},
@@ -203,6 +227,32 @@ COUNTRY_CODES = {
     "965": {"name": "Kuwait", "min_digits": 8},
     "968": {"name": "Oman", "min_digits": 8},
     "973": {"name": "Bahrain", "min_digits": 8},
+    "972": {"name": "Israel", "min_digits": 9},
+    "90": {"name": "Turkey", "min_digits": 10},
+    "20": {"name": "Egypt", "min_digits": 9},
+    # Asia / Pacific
+    "91": {"name": "India", "min_digits": 10},
+    "61": {"name": "Australia", "min_digits": 9},
+    "64": {"name": "New Zealand", "min_digits": 9},
+    "65": {"name": "Singapore", "min_digits": 8},
+    "60": {"name": "Malaysia", "min_digits": 9},
+    "62": {"name": "Indonesia", "min_digits": 9},
+    "63": {"name": "Philippines", "min_digits": 10},
+    "66": {"name": "Thailand", "min_digits": 9},
+    "84": {"name": "Vietnam", "min_digits": 9},
+    "81": {"name": "Japan", "min_digits": 10},
+    "82": {"name": "South Korea", "min_digits": 9},
+    "86": {"name": "China", "min_digits": 11},
+    "852": {"name": "Hong Kong", "min_digits": 8},
+    "886": {"name": "Taiwan", "min_digits": 9},
+    # Africa / South America
+    "27": {"name": "South Africa", "min_digits": 9},
+    "234": {"name": "Nigeria", "min_digits": 9},
+    "254": {"name": "Kenya", "min_digits": 9},
+    "55": {"name": "Brazil", "min_digits": 10},
+    "54": {"name": "Argentina", "min_digits": 10},
+    "56": {"name": "Chile", "min_digits": 9},
+    "57": {"name": "Colombia", "min_digits": 10},
 }
 
 # Country hints for guessing country code from a location string
@@ -392,12 +442,14 @@ def is_valid_phone(phone: str) -> bool:
     digits = re.sub(r'\D', '', phone)
     if len(digits) < 8 or len(digits) > 16:
         return False
-    # Check if country code is known and has enough remaining digits
+    # Check if country code is known and has enough remaining digits.
+    # Note: 'digits' has no '+' prefix, so the country code starts at index 0
+    # (the earlier digits[1:] indexing made every valid number fail).
     for cc_len in [3, 2, 1]:
-        cc = digits[1:1+cc_len]
+        cc = digits[:cc_len]
         if cc in COUNTRY_CODES:
             info = COUNTRY_CODES[cc]
-            remaining = len(digits) - 1 - cc_len
+            remaining = len(digits) - cc_len
             return remaining >= info["min_digits"]
     return False
 
@@ -568,7 +620,49 @@ NON_NAMES = {
     "politique", "charte", "données", "personnelles", "cookies",
     # Arabic transliteration common words
     "mohammed", "ahmed", "ali", "hassan", "hussein", "ibrahim",
+
+    # Multi-word UI/navigation phrases that are not people
+    "about us", "view all", "our team", "meet the team", "our story",
+    "learn more", "read more", "get in touch", "our mission",
+    "our vision", "our values", "our clients", "our partners",
+    "our work", "our approach", "our people", "our company",
+    "our products", "our services", "team member", "get started",
+    "sign up", "our firm", "our family", "meet our team",
+    "our leadership", "our phoenix", "our solutions",
 }
+
+# Single words that never belong in a person name (UI labels, department
+# headings, org suffixes). Used to reject junk like "Additive Manufacturing"
+# or "Kino Catechetical Institute" that the name detector picks up.
+NON_NAME_WORDS = {
+    "about", "us", "view", "all", "our", "team", "story", "learn",
+    "more", "read", "get", "touch", "mission", "vision", "values",
+    "clients", "partners", "work", "approach", "people", "leadership",
+    "company", "products", "services", "contact", "careers", "jobs",
+    "login", "sign", "register", "news", "blog", "portfolio",
+    "projects", "solutions", "manufacturing", "engineering",
+    "department", "division", "gallery", "menu", "home", "join",
+    "apply", "privacy", "terms", "cookies", "search", "navigation",
+    "footer", "header", "powered", "copyright", "institute",
+    "university", "college", "school", "center", "centre",
+    "foundation", "association", "council", "society", "authority",
+    "ministry", "laboratory", "corporate", "office", "group",
+    "limited", "gmbh", "llc", "inc", "company", "ltd", "plc",
+    "systems", "technologies", "technology", "software", "consulting",
+    "research", "state", "additive", "catechetical", "phoenix",
+    "global", "international", "digital", "cloud", "network", "data",
+}
+
+
+def _is_real_person_name(name: str) -> bool:
+    """Reject UI labels and department/org headings passed off as names."""
+    name_lower = name.lower().strip()
+    if name_lower in NON_NAMES:
+        return False
+    words = name_lower.split()
+    if not words or len(words) > 3:
+        return False
+    return not any(w in NON_NAME_WORDS for w in words)
 
 
 def extract_people_from_html(html_text: str) -> list:
@@ -604,7 +698,7 @@ def extract_people_from_html(html_text: str) -> list:
             nm = name_matches[-1]  # closest before title
             name = nm.group(0)
             name_lower = name.lower()
-            if name_lower not in NON_NAMES and name_lower not in seen_names:
+            if not _is_real_person_name(name) and name_lower not in seen_names:
                 seen_names.add(name_lower)
                 rank = _get_title_rank(title_raw)
                 found.append({
@@ -621,7 +715,7 @@ def extract_people_from_html(html_text: str) -> list:
         if nm:
             name = nm.group(0)
             name_lower = name.lower()
-            if name_lower not in NON_NAMES and name_lower not in seen_names:
+            if not _is_real_person_name(name) and name_lower not in seen_names:
                 seen_names.add(name_lower)
                 rank = _get_title_rank(title_raw)
                 found.append({
@@ -642,7 +736,7 @@ def extract_people_from_html(html_text: str) -> list:
         if nm:
             name = nm.group(0)
             name_lower = name.lower()
-            if name_lower not in NON_NAMES and name_lower not in seen_names:
+            if not _is_real_person_name(name) and name_lower not in seen_names:
                 context = hm.group(0)[len(heading_text):]
                 title_match = TITLE_RE.search(context)
                 title = title_match.group(0) if title_match else "Team Member"
@@ -1075,7 +1169,10 @@ def get_whatsapp_phones(site_data: dict, location: str = "") -> list:
             seen.add(num)
             confirmed.append((num, True, "wa.me link on site"))
 
-    # 2. If site mentions WhatsApp, try to verify found phone numbers
+    # 2. If site mentions WhatsApp, try to verify found phone numbers.
+    #    Only numbers that convert to a VALID international format are kept —
+    #    otherwise 7-digit scraps like "0130227" would become junk WhatsApp
+    #    links.
     if site_data["site_whatsapp"]:
         country_code = get_country_code_from_location(location) if location else None
         for num in site_data["phones"]:
@@ -1085,8 +1182,9 @@ def get_whatsapp_phones(site_data: dict, location: str = "") -> list:
                     international = country_code + num[1:]
                     if is_valid_phone(international):
                         confirmed.append((international, True, "site mentions WhatsApp"))
-                        continue
-                confirmed.append((num, True, "site mentions WhatsApp"))
+                    continue
+                if is_valid_phone(num):
+                    confirmed.append((num, True, "site mentions WhatsApp"))
 
     # 3. For remaining phones (site has no WhatsApp indicators), try wa.me API
     if not site_data["site_whatsapp"]:
@@ -1100,10 +1198,11 @@ def get_whatsapp_phones(site_data: dict, location: str = "") -> list:
                         if has_wa:
                             confirmed.append((international, True, "wa.me API check"))
                         continue
-                has_wa = check_whatsapp_via_api(num)
-                seen.add(num)
-                if has_wa:
-                    confirmed.append((num, True, "wa.me API check"))
+                if is_valid_phone(num):
+                    has_wa = check_whatsapp_via_api(num)
+                    seen.add(num)
+                    if has_wa:
+                        confirmed.append((num, True, "wa.me API check"))
 
     return [(num, source) for num, _, source in confirmed]
 
@@ -1528,9 +1627,9 @@ def get_osm_tag_queries(niche: str, bbox_coords) -> str:
 # niche word itself doesn't appear in the company name. E.g. for "IT" this
 # keeps "Tech Solutions" and "Data Systems GmbH" in the results.
 NICHE_NAME_TERMS = {
-    "it": ["tech", "software", "systems", "data", "cyber",
-           "computer", "network", "cloud", "programming", "information",
-           "edv", "informatik", "softwarehaus"],
+    "it": ["tech", "technology", "technologies", "software", "systems",
+           "data", "cyber", "computer", "network", "cloud", "telecom",
+           "programming", "information", "edv", "informatik", "softwarehaus"],
     "it company": ["tech", "software", "systems", "data", "cyber",
                     "computer", "network", "cloud", "programming", "information",
                     "edv", "informatik", "softwarehaus"],
@@ -1597,9 +1696,18 @@ def is_relevant_to_niche(name: str, tags: dict, niche: str) -> bool:
     if not name_lower:
         return False
 
-    # 2) Whole-word match on any niche keyword
+    # 2) Whole-word match on any niche keyword.
+    #    Short acronym keywords ("it", "ai", "hr") are ordinary English words
+    #    too ("Didn't Do It Bail Bonds" contains "It") — for keywords of
+    #    2 chars or fewer, only trust them at the START of the company name
+    #    (e.g. "IT Solutions", "IT-Consulting"). 3+ char keywords ("gym",
+    #    "bar", "spa") still match anywhere as a whole word so legit
+    #    mid-name matches like "Fit Gym" survive.
     for kw in extract_niche_keywords(niche):
-        if re.search(rf"\b{re.escape(kw)}\b", name_lower):
+        if len(kw) <= 2:
+            if re.search(rf"^{re.escape(kw)}(?=[\s\-]|$)", name_lower):
+                return True
+        elif re.search(rf"\b{re.escape(kw)}\b", name_lower):
             return True
 
     # 3) Whole-word match on any related term for the niche
@@ -1991,7 +2099,7 @@ def main():
 
     # Step 3b: Google organic search (free, no API key needed)
     print(f"\n{_ARROW} Searching Google for '{niche}' businesses (organic results)...")
-    google_results = search_google_businesses(niche, location, limit=50)
+    google_results = search_google_businesses(niche, location, limit=150)
     if google_results:
         print(f"  {_INFO} Google found {len(google_results)} potential businesses.")
     else:
@@ -2028,6 +2136,16 @@ def main():
             skipped_no_name += 1
             continue
         if not website:
+            skipped_no_website += 1
+            continue
+        # Skip social-media-only / directory "websites" — they are not real
+        # company sites and scraping them yields no usable contact data.
+        website_domain = urlparse(website).netloc.lower()
+        if any(s in website_domain for s in (
+            "facebook.com", "instagram.com", "linkedin.com", "twitter.com",
+            "x.com", "youtube.com", "tiktok.com", "yelp.com",
+            "foursquare.com", "google.com",
+        )):
             skipped_no_website += 1
             continue
         if not is_relevant_to_niche(name, tags, niche):
@@ -2127,6 +2245,10 @@ def main():
                 return None, {"skip": "cancelled"}
 
             c_domain = urlparse(c_website).netloc
+            # Strip a leading www. so generated emails are user@domain.tld
+            # instead of user@www.domain.tld.
+            if c_domain.startswith("www."):
+                c_domain = c_domain[4:]
             try:
                 c_data = scrape_site(c_website)
                 c_emails = c_data["emails"]
