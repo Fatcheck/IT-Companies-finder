@@ -86,6 +86,15 @@ MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "30"))
 # Can also be set via --limit CLI argument.
 MAX_COMPANIES = 0
 
+# If the strict niche filter yields fewer than this many OSM candidates, a
+# relaxed name-substring fallback runs to keep the result volume up.
+RELAXED_FALLBACK_MIN = 50
+
+# Only run the heavy catch-all Overpass query when the specific name/tag-based
+# queries return fewer than this many candidates. On big regions (whole
+# countries, large states) the catch-all can be extremely slow and time out.
+CATCHALL_MIN_RESULTS = 100
+
 # ─── Terminal-safe symbols (Windows cp1252 compat) ──────────────────────────────
 _CHECK = "[OK]"
 _CROSS = "[X]"
@@ -169,6 +178,8 @@ OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://lz4.overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
 ]
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
@@ -738,7 +749,18 @@ def search_google_businesses(niche: str, location: str, limit: int = 50) -> list
     results = []
     seen_domains = set()
 
-    queries = [
+    # Short/ambiguous niches (e.g. "IT", "AI", "SEO") return unrelated
+    # businesses when searched bare. Add a "companies" variant first to
+    # disambiguate (e.g. "IT companies in Paris").
+    queries = []
+    if len(niche.strip()) <= 4:
+        queries += [
+            f"{niche} companies in {location}",
+            f"{niche} companies {location}",
+            f"best {niche} companies in {location}",
+            f"top {niche} companies in {location}",
+        ]
+    queries += [
         f"{niche} in {location}",
         f"{niche} {location}",
         f"best {niche} in {location}",
@@ -1343,10 +1365,37 @@ NICHE_OSM_TAGS = {
     "taxi": ["amenity=taxi", "shop=taxi"],
 
     # Tech & Business Services
-    "it": ["office=it", "office=software", "office=technology"],
+    "it": ["office=it", "office=software", "office=technology",
+           "office=telecommunication", "office=web_design", "office=research"],
+    "it company": ["office=it", "office=software", "office=technology"],
+    "it services": ["office=it", "office=software", "office=technology"],
+    "it consulting": ["office=it", "office=software", "office=consulting"],
+    "tech": ["office=technology", "office=it", "office=software"],
+    "tech company": ["office=technology", "office=it", "office=software"],
+    "technology": ["office=technology", "office=it", "office=software"],
+    "technology company": ["office=technology", "office=it", "office=software"],
     "software": ["office=software", "office=it"],
-    "it company": ["office=it", "office=software"],
-    "technology": ["office=technology", "office=it"],
+    "software company": ["office=software", "office=it"],
+    "software development": ["office=software", "office=it"],
+    "software developer": ["office=software", "office=it"],
+    "web development": ["office=software", "office=web_design", "office=it"],
+    "web design": ["office=web_design", "office=software", "office=it"],
+    "web developer": ["office=web_design", "office=software", "office=it"],
+    "app development": ["office=software", "office=it"],
+    "mobile development": ["office=software", "office=it"],
+    "programming": ["office=software", "office=it"],
+    "developer": ["office=software", "office=it"],
+    "computer": ["shop=computer", "office=it", "shop=electronics"],
+    "computer services": ["office=it", "shop=computer"],
+    "computer repair": ["shop=computer", "shop=electronics"],
+    "cybersecurity": ["office=it", "office=security"],
+    "cloud": ["office=it", "office=software"],
+    "cloud computing": ["office=it", "office=software"],
+    "data": ["office=it", "office=software"],
+    "telecom": ["office=telecommunication", "office=it"],
+    "telecommunications": ["office=telecommunication", "office=it"],
+    "e-commerce": ["shop=electronics", "office=it", "office=software"],
+    "ecommerce": ["shop=electronics", "office=it", "office=software"],
     "startup": ["office=startup", "office=company"],
     "coworking": ["amenity=coworking", "office=coworking"],
     "marketing agency": ["office=marketing", "office=advertising"],
@@ -1432,15 +1481,19 @@ NICHE_OSM_TAGS = {
     "party rental": ["shop=party_supplies", "office=party_rental"],
 }
 
-def get_osm_tag_queries(niche: str, bbox_coords) -> str:
-    """Build tag-specific Overpass sub-queries from the niche mapping."""
+def get_niche_tags(niche: str) -> list:
+    """Return the deduplicated list of 'key=value' OSM tags mapped for a niche.
+
+    Checks the full niche phrase first, then each individual keyword, so
+    e.g. "fitness gym" matches leisure=fitness_centre, amenity=gym, ...
+    """
     niche_lower = niche.lower().strip()
     tags = []
-    
+
     # Check full niche phrase first
     if niche_lower in NICHE_OSM_TAGS:
         tags.extend(NICHE_OSM_TAGS[niche_lower])
-    
+
     # Check individual keywords
     keywords = extract_niche_keywords(niche)
     for kw in keywords:
@@ -1448,10 +1501,17 @@ def get_osm_tag_queries(niche: str, bbox_coords) -> str:
             for tag in NICHE_OSM_TAGS[kw]:
                 if tag not in tags:
                     tags.append(tag)
-    
+
+    return tags
+
+
+def get_osm_tag_queries(niche: str, bbox_coords) -> str:
+    """Build tag-specific Overpass sub-queries from the niche mapping."""
+    tags = get_niche_tags(niche)
+
     if not tags:
         return ""
-    
+
     south, north, west, east = bbox_coords
     lines = []
     for tag_val in tags:
@@ -1460,8 +1520,117 @@ def get_osm_tag_queries(niche: str, bbox_coords) -> str:
             lines.append(f'      node["{tag_key}"="{tag_value}"]({south},{west},{north},{east});')
             lines.append(f'      way["{tag_key}"="{tag_value}"]({south},{west},{north},{east});')
             lines.append(f'      relation["{tag_key}"="{tag_value}"]({south},{west},{north},{east});')
-    
+
     return "\n".join(lines)
+
+
+# Extra name keywords that make a company relevant to a niche even when the
+# niche word itself doesn't appear in the company name. E.g. for "IT" this
+# keeps "Tech Solutions" and "Data Systems GmbH" in the results.
+NICHE_NAME_TERMS = {
+    "it": ["tech", "software", "systems", "data", "cyber",
+           "computer", "network", "cloud", "programming", "information",
+           "edv", "informatik", "softwarehaus"],
+    "it company": ["tech", "software", "systems", "data", "cyber",
+                    "computer", "network", "cloud", "programming", "information",
+                    "edv", "informatik", "softwarehaus"],
+    "it services": ["tech", "software", "systems", "data", "cyber",
+                     "computer", "network", "cloud", "programming", "information",
+                     "edv", "informatik", "softwarehaus"],
+    "software": ["software", "tech", "digital", "systems", "app", "programming"],
+    "software company": ["software", "tech", "digital", "systems", "app"],
+    "software development": ["software", "tech", "digital", "systems", "app"],
+    "tech": ["technology", "tech", "software", "digital"],
+    "technology": ["technology", "tech", "software", "digital"],
+    "technology company": ["technology", "tech", "software", "digital"],
+    "computer": ["computer", "tech", "it", "repair", "services"],
+    "web development": ["web", "software", "tech", "digital", "design"],
+    "web design": ["web", "design", "digital", "tech"],
+    "app development": ["app", "software", "mobile", "tech"],
+    "mobile development": ["mobile", "app", "software", "tech"],
+    "programming": ["programming", "software", "tech", "code"],
+    "developer": ["developer", "software", "tech", "code", "programming"],
+    "data": ["data", "analytics", "science", "tech"],
+    "cybersecurity": ["cyber", "security", "tech", "it"],
+    "cloud": ["cloud", "tech", "software", "it"],
+    "cloud computing": ["cloud", "tech", "software", "it"],
+    "telecom": ["telecom", "telecommunication", "communication", "network"],
+    "telecommunications": ["telecom", "telecommunication", "communication", "network"],
+    "e-commerce": ["ecommerce", "e-commerce", "online", "store", "shop", "web"],
+    "ecommerce": ["ecommerce", "e-commerce", "online", "store", "shop", "web"],
+    "startup": ["ventures", "labs", "capital", "partners", "tech", "software",
+                "digital", "innovation"],
+}
+
+
+def is_relevant_to_niche(name: str, tags: dict, niche: str) -> bool:
+    """Decide whether an OSM element actually matches the requested niche.
+
+    Returns True when ANY of these hold:
+      1. The element carries a tag from the niche->OSM tag mapping
+         (e.g. office=it for the "IT" niche).
+      2. The element's name contains a niche keyword as a whole word
+         (word-boundary aware, so "IT" doesn't match "Fitness").
+      3. The element's name contains a related term for the niche
+         (e.g. "Tech Solutions" for the "IT" niche).
+
+    This is the specificity filter that stops the broad catch-all Overpass
+    query from returning restaurants, barbers and other unrelated businesses
+    when you search for a niche like "IT".
+    """
+    tags = tags or {}
+    name_lower = (name or "").lower()
+    niche_lower = niche.lower().strip()
+
+    # 1) Tag match against the niche mapping (most reliable signal).
+    #    office=company is deliberately neutral: in OSM it tags "any company",
+    #    so it must NOT by itself pass the filter (otherwise the catch-all
+    #    query would let every generic business through, e.g. for "startup").
+    for tag_val in get_niche_tags(niche):
+        if "=" in tag_val:
+            tag_key, tag_value = tag_val.split("=", 1)
+            if tag_key == "office" and tag_value == "company":
+                continue
+            if (tags.get(tag_key) or "").lower() == tag_value:
+                return True
+
+    if not name_lower:
+        return False
+
+    # 2) Whole-word match on any niche keyword
+    for kw in extract_niche_keywords(niche):
+        if re.search(rf"\b{re.escape(kw)}\b", name_lower):
+            return True
+
+    # 3) Whole-word match on any related term for the niche
+    for term in NICHE_NAME_TERMS.get(niche_lower, []):
+        if re.search(rf"\b{re.escape(term)}\b", name_lower):
+            return True
+
+    return False
+
+
+def is_relaxed_match(name: str, niche: str) -> bool:
+    """Looser relevance check used ONLY when the strict filter yields too few
+    results (e.g. sparsely-tagged US cities). Accepts companies whose name
+    contains a niche keyword (len >= 3) or a related term (len >= 3) as a
+    substring — so "Acme Technologies" passes for the "IT" niche. Short terms
+    (like "it") are excluded so names such as "Fitness" or "Digital" never
+    flood back in.
+    """
+    name_lower = (name or "").lower()
+    if not name_lower:
+        return False
+
+    for kw in extract_niche_keywords(niche):
+        if len(kw) >= 3 and kw in name_lower:
+            return True
+
+    for term in NICHE_NAME_TERMS.get(niche.lower().strip(), []):
+        if len(term) >= 3 and term in name_lower:
+            return True
+
+    return False
 
 
 # ─── Overpass Query Builder (Dynamic — works for ANY niche) ──────────────────────
@@ -1470,10 +1639,12 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
     """
     Build dynamic Overpass queries for a generic business niche.
 
-    Uses a multi-phase approach with smart tag mapping + parallel queries:
+    Uses a multi-phase approach with smart tag mapping:
     Phase 0: Tag-specific queries from niche→OSM tag mapping (most precise)
     Phase 1: Name-based matching + tag-value matching across all business types
-    Phase 2: Ultra-broad catch-all for any element with name+website in the bbox
+    Phase 2: Broad catch-all for any element with name+website in the bbox
+            (only runs when Phase 1 under-delivers, to avoid server timeouts
+            on large regions)
 
     The niche string is split into keywords, and the query matches:
     - Businesses whose OSM TAG:VALUE matches the niche (e.g., leisure=fitness_centre for "fitness")
@@ -1599,10 +1770,13 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
       {tag_query}
     """
 
-    # ── Phase 2: Ultra-broad catch-all for ANY element with name+website ──
-    # This is the safety net — grabs anything in the bbox with a name and website
+    # ── Phase 2: Broad catch-all — ONLY when specific queries under-deliver ──
+    # On big regions (whole countries, large states) an unconditional catch-all
+    # makes the Overpass server time out. So it now runs only if Phase 1 did
+    # not find enough candidates, and it no longer scans buildings/landuse
+    # (those rarely have company websites and only add server load).
     catchall_query = f"""
-      // ANY element with a name AND website tag (broadest possible)
+      // ANY element with a name AND website tag
       node["name"]["website"~"."]({south},{west},{north},{east});
       way["name"]["website"~"."]({south},{west},{north},{east});
       relation["name"]["website"~"."]({south},{west},{north},{east});
@@ -1611,51 +1785,35 @@ def build_overpass_queries(bbox: list, niche: str) -> tuple:
       node["name"]["contact:website"~"."]({south},{west},{north},{east});
       way["name"]["contact:website"~"."]({south},{west},{north},{east});
       relation["name"]["contact:website"~"."]({south},{west},{north},{east});
-
-      // Commercial/retail buildings with name
-      node["building"="commercial"]["name"~"."]({south},{west},{north},{east});
-      way["building"="commercial"]["name"~"."]({south},{west},{north},{east});
-      node["building"="retail"]["name"~"."]({south},{west},{north},{east});
-      way["building"="retail"]["name"~"."]({south},{west},{north},{east});
-      node["building"="office"]["name"~"."]({south},{west},{north},{east});
-      way["building"="office"]["name"~"."]({south},{west},{north},{east});
-
-      // Landuse commercial areas
-      relation["landuse"="commercial"]({south},{west},{north},{east});
-      way["landuse"="commercial"]({south},{west},{north},{east});
     """
 
-    # Run Phase 1 and Phase 2 IN PARALLEL (cuts total time in half)
-    print(f"     Running name-based + catch-all queries in parallel...")
-    elements = []
-    extra_elements = []
+    # Phase 1 first — the specific, targeted query
+    print(f"     Running name/tag-based queries...")
+    try:
+        elements = _run_overpass(name_based_query)
+    except Exception as e:
+        print(f"  {_WARN} Phase 1 query failed: {e}")
+        elements = []
+    print(f"\n{_INFO} Found {len(elements)} candidates from name/tag-based queries.")
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {
-            executor.submit(_run_overpass, name_based_query): "phase1",
-            executor.submit(_run_overpass, catchall_query): "phase2",
-        }
-        for future in as_completed(futures):
-            phase = futures[future]
-            try:
-                result = future.result()
-                if phase == "phase1":
-                    elements = result
-                    print(f"\n{_INFO} Found {len(elements)} candidates from name/tag-based queries.")
-                else:
-                    extra_elements = result
-            except Exception as e:
-                print(f"  {_WARN} Phase {phase} query failed: {e}")
+    # Only fall back to the heavy catch-all when Phase 1 under-delivered
+    if len(elements) < CATCHALL_MIN_RESULTS:
+        print(f"     Only {len(elements)} candidates — running broader catch-all query...")
+        try:
+            extra_elements = _run_overpass(catchall_query)
+        except Exception as e:
+            print(f"  {_WARN} Catch-all query failed: {e}")
+            extra_elements = []
 
-    print(f"     Running broader catch-all query for global coverage...")
-
-    # Deduplicate by element id
-    seen_ids = {(el.get("type", ""), el.get("id")) for el in elements}
-    for el in extra_elements:
-        key = (el.get("type", ""), el.get("id"))
-        if key not in seen_ids:
-            seen_ids.add(key)
-            elements.append(el)
+        # Deduplicate by element id
+        seen_ids = {(el.get("type", ""), el.get("id")) for el in elements}
+        for el in extra_elements:
+            key = (el.get("type", ""), el.get("id"))
+            if key not in seen_ids:
+                seen_ids.add(key)
+                elements.append(el)
+    else:
+        print(f"     Enough candidates from specific queries — skipping heavy catch-all.")
 
     print(f"{_INFO} Total candidates after all queries: {len(elements)}")
 
@@ -1857,7 +2015,11 @@ def main():
     # Pre-filter: cheap checks (no name, no website) done sequentially first
     valid_companies = []
 
-    # Add OSM results
+    # Add OSM results — but ONLY companies that are relevant to the requested
+    # niche (tag match, whole-word name match, or related term match). This
+    # stops the broad catch-all Overpass query from adding restaurants,
+    # barbers and other unrelated businesses when you search a niche like "IT".
+    skipped_not_relevant = 0
     for el in elements:
         tags = el.get("tags", {})
         name = tags.get("name")
@@ -1868,7 +2030,37 @@ def main():
         if not website:
             skipped_no_website += 1
             continue
+        if not is_relevant_to_niche(name, tags, niche):
+            skipped_not_relevant += 1
+            continue
         valid_companies.append((name, normalize_url(website), "OSM"))
+
+    # Fallback: if the strict filter left very few OSM candidates (common in
+    # sparsely-tagged cities like Seattle), run a relaxed pass that accepts
+    # companies whose name contains a niche keyword or related term as a
+    # substring (not just whole-word). Keeps volume up without letting
+    # clearly-unrelated businesses (Fitness, Digital) flood the results.
+    # Trade-off: substring matching can admit marginal false positives
+    # (e.g. "gym" matches "Gymnasium") — acceptable only as a low-yield fallback.
+    if skipped_not_relevant and len(valid_companies) < RELAXED_FALLBACK_MIN:
+        relaxed_added = 0
+        for el in elements:
+            tags = el.get("tags", {})
+            name = tags.get("name")
+            website = tags.get("website") or tags.get("contact:website") or ""
+            if not name or not website:
+                continue
+            if is_relevant_to_niche(name, tags, niche):
+                continue  # already accepted in the strict pass
+            if is_relaxed_match(name, niche):
+                valid_companies.append((name, normalize_url(website), "OSM"))
+                relaxed_added += 1
+        skipped_not_relevant -= relaxed_added
+        if relaxed_added:
+            print(f"  {_INFO} Relaxed fallback added {relaxed_added} more '{niche}' companies.")
+
+    if skipped_not_relevant:
+        print(f"  {_INFO} Skipped {skipped_not_relevant} OSM companies that don't match '{niche}'.")
 
     # Add HERE results (dedup by name match with OSM)
     here_names = set()
@@ -2087,6 +2279,8 @@ def main():
         print(f"  Skipped (no name):              {skipped_no_name}")
     if skipped_no_website:
         print(f"  No website listed:              {skipped_no_website}")
+    if skipped_not_relevant:
+        print(f"  Skipped (not in niche):         {skipped_not_relevant}")
     if skipped_no_email:
         print(f"  Skipped (no emails found):      {skipped_no_email}")
     print(f"  Skipped (no WhatsApp found):    {skipped_no_whatsapp}")
