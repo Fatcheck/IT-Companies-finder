@@ -111,6 +111,11 @@ def clean_row(row: dict, strict: bool = False, drop_whatsapp_only: bool = False)
     if not kept:
         has_wa = bool((row.get("WhatsApp Link") or "").strip())
         if has_wa and not drop_whatsapp_only:
+            # Keep the row for WhatsApp outreach, but scrub the junk emails
+            # out of the email columns so the output CSV is actually clean.
+            for col in EMAIL_COLUMNS:
+                if col in row:
+                    row[col] = ""
             return row, removed, False
         return row, removed, True
 
