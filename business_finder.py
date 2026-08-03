@@ -11,7 +11,9 @@ this script:
    - WhatsApp availability (checks for wa.me links, WhatsApp mentions, and API verification)
 3. Infers the email pattern from found company emails and generates the
    decision-maker's email address.
-4. Only saves companies that have a confirmed WhatsApp number.
+4. Fills the --limit quota best-first: email+WhatsApp, then emails-only,
+   then WhatsApp-only, then website-only companies — so --limit 500 really
+   returns ~500 rows instead of stopping at a handful.
 5. Saves results to a CSV file with clickable WhatsApp links and contact info.
 
 USAGE:
@@ -2178,15 +2180,16 @@ def main():
     target_count = MAX_COMPANIES
     print(f"\n{_INFO} Found {len(elements)} candidate businesses on OpenStreetMap.")
     if target_count > 0:
-        print(f"       Targeting {target_count} successful results (must have BOTH emails & WhatsApp).")
+        print(f"       Targeting {target_count} results — fills best-first:")
+        print(f"       1) email+WhatsApp  2) emails only  3) WhatsApp only  4) website only")
     print()
 
     # Step 3: Search HERE API (if API key is available — 30k free req/mo)
-    here_results = here_search(niche, location, limit=min(100, target_count or 100))
+    here_results = here_search(niche, location, limit=min(500, target_count or 100))
 
     # Step 3b: Google organic search (free, no API key needed)
     print(f"\n{_ARROW} Searching Google for '{niche}' businesses (organic results)...")
-    google_results = search_google_businesses(niche, location, limit=150)
+    google_results = search_google_businesses(niche, location, limit=max(150, target_count or 150))
     if google_results:
         print(f"  {_INFO} Google found {len(google_results)} potential businesses.")
     else:
@@ -2198,7 +2201,7 @@ def main():
     ddg_results = []
     if len(google_results) < 60:
         print(f"\n{_ARROW} Searching DuckDuckGo for '{niche}' businesses (fallback)...")
-        ddg_results = search_duckduckgo_businesses(niche, location, limit=150)
+        ddg_results = search_duckduckgo_businesses(niche, location, limit=max(150, target_count or 150))
         if ddg_results:
             print(f"  {_INFO} DuckDuckGo found {len(ddg_results)} potential businesses.")
         else:
@@ -2278,6 +2281,37 @@ def main():
 
     if skipped_not_relevant:
         print(f"  {_INFO} Skipped {skipped_not_relevant} OSM companies that don't match '{niche}'.")
+
+    # Broad fill pass: when a target is requested and the niche-filtered pool
+    # is still smaller than it, add the remaining OSM companies that have a
+    # name AND a website even if they don't match the niche. The worker still
+    # needs a real site to scrape, and without this pass --limit 500 stops at
+    # whatever the strict+relaxed filters returned (often < 20).
+    if target_count > 0 and len(valid_companies) < target_count:
+        existing_domains = {urlparse(w).netloc.lower() for _, w, _ in valid_companies}
+        fill_added = 0
+        for el in elements:
+            tags = el.get("tags", {})
+            name = tags.get("name")
+            website = tags.get("website") or tags.get("contact:website") or ""
+            if not name or not website:
+                continue
+            website_domain = urlparse(normalize_url(website)).netloc.lower()
+            if any(s in website_domain for s in (
+                "facebook.com", "instagram.com", "linkedin.com", "twitter.com",
+                "x.com", "youtube.com", "tiktok.com", "yelp.com",
+                "foursquare.com", "google.com",
+            )):
+                continue
+            if website_domain in existing_domains:
+                continue
+            existing_domains.add(website_domain)
+            valid_companies.append((name, normalize_url(website), "OSM (fill)"))
+            fill_added += 1
+            if len(valid_companies) >= target_count:
+                break
+        if fill_added:
+            print(f"  {_INFO} Fill pass added {fill_added} more OSM companies (any niche) to reach the target.")
 
     # Add HERE results (dedup by name match with OSM)
     here_names = set()
@@ -2378,10 +2412,17 @@ def main():
                 c_sorted = sort_emails_by_relevance(c_emails) if c_emails else []
                 c_wa = get_whatsapp_phones(c_data, location)
 
-                if not c_sorted:
-                    return None, {"skip": "no_email", "name": c_name, "domain": c_domain}
-                if not c_wa:
-                    return None, {"skip": "no_whatsapp", "name": c_name, "domain": c_domain}
+                # Quality tier used to fill the --limit quota best-first:
+                # 1 = emails + WhatsApp (best), 2 = emails only,
+                # 3 = WhatsApp only, 4 = website only (last-resort filler).
+                if c_sorted and c_wa:
+                    tier = 1
+                elif c_sorted:
+                    tier = 2
+                elif c_wa:
+                    tier = 3
+                else:
+                    tier = 4
 
                 c_people = c_data.get("people", [])
                 c_person = c_title = c_email = ""
@@ -2400,29 +2441,31 @@ def main():
                             c_email = em
                             break
 
-                # Try Google search for the founder
-                google_result = search_google_founder(c_name)
-                if google_result:
-                    g_name, g_title = google_result
-                    g_rank = _get_title_rank(g_title)
-                    current_rank = _get_title_rank(c_title) if c_person else 999
-                    if g_rank < current_rank:
-                        c_person = g_name
-                        c_title = g_title
-                        founder_source = "Google search"
-                        c_pattern = infer_email_pattern(c_emails, c_domain)
-                        c_email = generate_contact_email(
-                            c_person, c_domain,
-                            c_pattern or '{first}.{last}',
-                        )
-                    elif not founder_source:
-                        founder_source = "website"
-                elif not founder_source:
+                # Try Google search for the founder — only for the best tier
+                # (emails + WhatsApp) to keep large runs fast (1 req/sec lock).
+                if tier == 1:
+                    google_result = search_google_founder(c_name)
+                    if google_result:
+                        g_name, g_title = google_result
+                        g_rank = _get_title_rank(g_title)
+                        current_rank = _get_title_rank(c_title) if c_person else 999
+                        if g_rank < current_rank:
+                            c_person = g_name
+                            c_title = g_title
+                            founder_source = "Google search"
+                            c_pattern = infer_email_pattern(c_emails, c_domain)
+                            c_email = generate_contact_email(
+                                c_person, c_domain,
+                                c_pattern or '{first}.{last}',
+                            )
+                        elif not founder_source:
+                            founder_source = "website"
+                if not founder_source:
                     founder_source = "none"
 
-                c_phone = c_wa[0][0]
-                c_source = c_wa[0][1]
-                c_wa_link = f"https://wa.me/{re.sub(r'\D', '', c_phone)}"
+                c_phone = c_wa[0][0] if c_wa else ""
+                c_source = c_wa[0][1] if c_wa else ""
+                c_wa_link = f"https://wa.me/{re.sub(r'\D', '', c_phone)}" if c_phone else ""
 
                 row = {
                     "Company Name": _clean_csv_val(c_name),
@@ -2436,6 +2479,9 @@ def main():
                     "Contact Email": _clean_csv_val(c_email),
                     "Founder Source": _clean_csv_val(founder_source),
                     "All Emails Found": "; ".join(c_sorted) if c_sorted else "",
+                    # Internal sort key — never written to the CSV (CSV_FIELDS
+                    # controls the output columns). Lower = better quality.
+                    "__tier": tier,
                 }
                 info = {
                     "name": c_name, "domain": c_domain,
@@ -2445,6 +2491,7 @@ def main():
                     "contact_email": c_email,
                     "phone": c_phone,
                     "founder_source": founder_source,
+                    "tier": tier,
                 }
                 return row, info
 
@@ -2456,41 +2503,49 @@ def main():
                 future_map = {executor.submit(_worker, n, w, s): (n, w, s)
                               for n, w, s in valid_companies}
 
+                tier1_count = 0  # best-quality rows (email + WhatsApp)
+
                 for future in as_completed(future_map):
-                    if target_count > 0 and len(results) >= target_count:
+                    # Early exit only when the BEST tier already fills the
+                    # quota. Lower tiers are still useful, so otherwise we keep
+                    # going and sort/truncate best-first after the pool runs.
+                    if target_count > 0 and tier1_count >= target_count:
                         _target_reached.set()
                         for f in future_map:
                             f.cancel()
                         pending = sum(1 for f in future_map if not f.done())
-                        print(f"\n  {_INFO} Reached target of {target_count} successful results."
-                              f" {pending} unprocessed candidates remaining.\n")
+                        print(f"\n  {_INFO} Reached target of {target_count} top-quality"
+                              f" (email+WhatsApp) results. {pending} unprocessed"
+                              f" candidates remaining.\n")
                         break
 
                     row, info = future.result()
 
                     if row is not None:
+                        tier = info.get("tier", 4)
+                        if tier == 1:
+                            tier1_count += 1
                         results.append(row)
                         idx = len(results)
                         progress = f"{idx}/{target_count}" if target_count > 0 else str(idx)
-                        print(f"  [{progress}] {info['name']}")
+                        tier_tag = {1: "email+WA", 2: "email", 3: "WA", 4: "site"}[tier]
+                        wa_ok = _CHECK if tier in (1, 3) else _WARN
+                        print(f"  [{progress}] {info['name']} [{tier_tag}]")
                         print(f"         {_ARROW} {info['domain']}")
-                        print(f"         {info['n_emails']} email(s) | WhatsApp {_CHECK}"
+                        print(f"         {info['n_emails']} email(s) | WhatsApp {wa_ok}"
                               f" | Result {progress}")
                         if info['contact_person']:
                             print(f"         {_ARROW} Person: {info['contact_person']}"
                                   f" ({info['contact_title']})")
                             print(f"         {_ARROW} Email: {info['contact_email']}")
-                        print(f"         {_ARROW} Phone: {info['phone']}")
+                        if info['phone']:
+                            print(f"         {_ARROW} Phone: {info['phone']}")
 
                         if idx % 5 == 0:
                             save_partial_results(csv_filename, results)
                     else:
                         skip = info.get("skip", "unknown")
-                        if skip == "no_email":
-                            skipped_no_email += 1
-                        elif skip == "no_whatsapp":
-                            skipped_no_whatsapp += 1
-                        elif skip.startswith("error"):
+                        if skip.startswith("error"):
                             errors += 1
 
                         if skip != "cancelled":
@@ -2501,7 +2556,16 @@ def main():
         except KeyboardInterrupt:
             _target_reached.set()
 
-        # Final save
+        # Final save — sort best-first (tier 1 -> 4) so the CSV starts with
+        # the most complete leads, then truncate to the requested target so
+        # --limit 500 really yields ~500 rows.
+        if target_count > 0 and len(results) > target_count:
+            results.sort(key=lambda r: r.get("__tier", 4))
+            kept = len(results)
+            results = results[:target_count]
+            print(f"  {_INFO} Sorted {kept} results by quality, kept top {target_count}.")
+        elif results:
+            results.sort(key=lambda r: r.get("__tier", 4))
         save_partial_results(csv_filename, results)
         print()
 
@@ -2515,10 +2579,11 @@ def main():
     total = len(final_results)
     with_emails = sum(1 for r in final_results if r["All Emails Found"])
     total_emails = sum(len(r["All Emails Found"].split("; ")) for r in final_results if r["All Emails Found"])
-    with_whatsapp = total
+    with_whatsapp = sum(1 for r in final_results if r["WhatsApp Link"])
 
-    print(f"  Total companies with WhatsApp:  {total}")
-    print(f"  Companies with emails + WhatsApp: {with_emails}")
+    print(f"  Total companies:                 {total}")
+    print(f"  Companies with emails:          {with_emails}")
+    print(f"  Companies with WhatsApp:        {with_whatsapp}")
     print(f"  Total emails collected:         {total_emails}")
     if skipped_no_name:
         print(f"  Skipped (no name):              {skipped_no_name}")
@@ -2526,9 +2591,6 @@ def main():
         print(f"  No website listed:              {skipped_no_website}")
     if skipped_not_relevant:
         print(f"  Skipped (not in niche):         {skipped_not_relevant}")
-    if skipped_no_email:
-        print(f"  Skipped (no emails found):      {skipped_no_email}")
-    print(f"  Skipped (no WhatsApp found):    {skipped_no_whatsapp}")
     if errors:
         print(f"  Scrape errors:                  {errors}")
     print()

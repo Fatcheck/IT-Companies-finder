@@ -8,7 +8,8 @@ Scrubs business-list CSVs produced by business_finder.py BEFORE you use them:
   company row.
 - Regenerates the "Contact Email" column from the emails that survive.
 - If a company has NO valid emails left — including single-email companies
-  whose only email is junk — the entire company row is removed from the list.
+  whose only email is junk — the row is kept ONLY when it still has a
+  WhatsApp link (still a usable lead); otherwise it is removed from the list.
 
 Validation reuses gmail_email_sender.is_valid_target_email, so the list is
 cleaned with exactly the same rules the sender applies before sending.
@@ -83,14 +84,15 @@ def collect_row_emails(row: dict) -> list:
     return unique
 
 
-def clean_row(row: dict, strict: bool = False) -> tuple[dict, list, bool]:
+def clean_row(row: dict, strict: bool = False, drop_whatsapp_only: bool = False) -> tuple[dict, list, bool]:
     """
     Strip bad emails from one company row.
 
     Returns (cleaned_row, removed_emails, dropped).
     - removed_emails: list of emails that were deleted from the row.
-    - dropped: True when the company has no valid emails left and the
-      whole row should be removed from the list.
+    - dropped: True when the company has no valid emails left (and no
+      WhatsApp link, unless drop_whatsapp_only is set) and the whole
+      row should be removed from the list.
     """
     all_emails = collect_row_emails(row)
 
@@ -102,8 +104,14 @@ def clean_row(row: dict, strict: bool = False) -> tuple[dict, list, bool]:
         else:
             removed.append(e)
 
-    # Nothing valid left -> the company row goes away entirely
+    # Nothing valid left. Keep the row if it still has a WhatsApp link (the
+    # finder now fills quotas with WhatsApp-only rows) — those are still
+    # usable leads. Only drop companies with no email AND no WhatsApp,
+    # unless --drop-whatsapp-only was requested.
     if not kept:
+        has_wa = bool((row.get("WhatsApp Link") or "").strip())
+        if has_wa and not drop_whatsapp_only:
+            return row, removed, False
         return row, removed, True
 
     # Rebuild the email columns from the survivors
@@ -149,6 +157,7 @@ def process_file(
     in_place: bool = False,
     dry_run: bool = False,
     quiet: bool = False,
+    drop_whatsapp_only: bool = False,
 ) -> tuple[int, int, int]:
     """
     Clean a single CSV. Returns (kept, dropped, removed_email_count).
@@ -171,7 +180,9 @@ def process_file(
 
     for row in rows:
         company = row.get("Company Name") or row.get("name") or "Unknown"
-        cleaned, removed, is_dropped = clean_row(row, strict=strict)
+        cleaned, removed, is_dropped = clean_row(
+            row, strict=strict, drop_whatsapp_only=drop_whatsapp_only,
+        )
         if is_dropped:
             dropped += 1
             for e in removed:
@@ -246,6 +257,12 @@ def main():
              "hash-like / CSS-class locals)",
     )
     parser.add_argument(
+        "--drop-whatsapp-only",
+        action="store_true",
+        help="Drop rows that have a WhatsApp link but no valid email "
+             "(default: keep them as usable WhatsApp leads)",
+    )
+    parser.add_argument(
         "--in-place",
         action="store_true",
         help="Overwrite the original CSV(s) instead of writing a cleaned copy",
@@ -302,6 +319,7 @@ def main():
             in_place=args.in_place,
             dry_run=args.dry_run,
             quiet=args.quiet,
+            drop_whatsapp_only=args.drop_whatsapp_only,
         )
         total_kept += kept
         total_dropped += dropped
