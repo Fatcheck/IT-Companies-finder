@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       limit:
-        description: 'Target number of rows (fills best-first: email+WhatsApp, email-only, WhatsApp-only, website-only)'
+        description: 'Target number of rows (fills best-first: companies with emails, then website-only)'
         required: false
         default: '500'
         type: string
@@ -22,9 +22,14 @@ on:
         default: '30'
         type: string
       pages:
-        description: 'Pages to check per site (default 6)'
+        description: 'Pages to check per site (default 15 — emails usually live on contact/impressum pages, not the homepage)'
         required: false
-        default: '6'
+        default: '15'
+        type: string
+      pool:
+        description: 'Candidate pool multiplier — gather up to limit × this many companies so the quota fills with companies that have emails (default 4)'
+        required: false
+        default: '4'
         type: string
 
 env:
@@ -60,6 +65,7 @@ jobs:
         env:
           MAX_WORKERS: ${{ inputs.workers }}
           MAX_PAGES_PER_SITE: ${{ inputs.pages }}
+          POOL_MULTIPLIER: ${{ inputs.pool }}
           # Optional: add a free HERE API key (developer.here.com, 30k req/mo)
           # as a repository secret named HERE_API_KEY to unlock ~500 more
           # candidate businesses per run (they come with websites attached).

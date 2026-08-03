@@ -1,6 +1,6 @@
 """
-Business Finder with WhatsApp & Key Person Email
----------------------------------------------------
+Business Finder with Key Person Email
+--------------------------------------
 Given a business niche/type and a location (city, region, or country),
 this script:
 1. Finds companies in that niche using OpenStreetMap's Overpass API (free, no key needed).
@@ -8,13 +8,12 @@ this script:
    - Decision-maker names/titles from team/about pages (CEO, Founder, etc.)
    - Contact email addresses (contact/careers pages)
    - Phone numbers
-   - WhatsApp availability (checks for wa.me links, WhatsApp mentions, and API verification)
 3. Infers the email pattern from found company emails and generates the
    decision-maker's email address.
-4. Fills the --limit quota best-first: email+WhatsApp, then emails-only,
-   then WhatsApp-only, then website-only companies — so --limit 500 really
-   returns ~500 rows instead of stopping at a handful.
-5. Saves results to a CSV file with clickable WhatsApp links and contact info.
+4. Fills the --limit quota best-first: companies with emails first, then
+   website-only companies — so --limit 500 really returns ~500 rows instead
+   of stopping at a handful.
+5. Saves results to a CSV file with contact info.
 
 USAGE:
     python business_finder.py "fitness gym" "Denver, Colorado"
@@ -49,8 +48,6 @@ NOTES / ETIQUETTE:
 - Decision-maker detection: the script scans team/about pages for names near leadership
   titles (CEO, Founder, Managing Director, etc.). Generated emails are best-guess
   inferences based on the company's email pattern — always double-check before sending.
-- WhatsApp detection: looks for WhatsApp mentions, wa.me links, and api.whatsapp.com/send
-  links on the company website. It also attempts a wa.me API check as a fallback.
 - Prefer personalized over mass-blast messaging — better response rate, and more respectful,
   especially for EU companies where GDPR applies to personal data.
 - Some sites block scrapers or disallow it in robots.txt; the script just skips those.
@@ -76,14 +73,25 @@ import requests
 # For high limits (500+), lower this to ~0.3 but be aware sites may rate-limit you.
 SCRAPE_DELAY = 0.35
 
-# Maximum number of pages to check per website
+# Maximum number of pages to check per website.
+# Emails almost always live on contact/impressum pages, NOT the homepage, so
+# we probe more pages than the old default of 6 (which never even reached
+# /impressum, /imprint, /careers, /jobs or /kontakt — a big miss, especially
+# for EU companies where the email is legally required on /impressum).
 # Can be overridden via the MAX_PAGES_PER_SITE environment variable.
-MAX_PAGES_PER_SITE = int(os.environ.get("MAX_PAGES_PER_SITE", "6"))
+MAX_PAGES_PER_SITE = int(os.environ.get("MAX_PAGES_PER_SITE", "15"))
 
 # Maximum concurrent workers for parallel website scraping.
 # Default 30 — aggressive parallelization. Lower if you get rate-limited.
 # Can be overridden via the MAX_WORKERS environment variable.
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "30"))
+
+# When --limit N is set, build a candidate pool of up to N * POOL_MULTIPLIER
+# companies. The scraper only finds emails on roughly 15-40% of sites, so a
+# 1:1 pool leaves the CSV padded with website-only rows that super_clean later
+# deletes — a bigger pool lets the quota be filled with companies that HAVE
+# emails. Can be overridden via the POOL_MULTIPLIER environment variable.
+POOL_MULTIPLIER = int(os.environ.get("POOL_MULTIPLIER", "4"))
 
 # Maximum companies to process (0 = unlimited). Helps avoid timeouts on large cities.
 # Can also be set via --limit CLI argument.
@@ -114,11 +122,15 @@ EMAIL_RE = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+(?:\.[a-zA-
 # Image extensions to filter out
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".bmp", ".tiff")
 
-# Known non-company email domains to exclude
+# Known placeholder/fake email domains to exclude.
+# NOTE: consumer providers (gmail.com, outlook.com, yahoo.com, ...) are
+# deliberately NOT here — small businesses very often list a Gmail address
+# on their site, and those are perfectly sendable leads. Filtering them out
+# silently threw away a large share of the emails the scraper found.
 SPAM_DOMAINS = {
-    "example.com", "domain.com", "yourdomain.com", "email.com",
-    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
-    "aol.com", "ymail.com", "protonmail.com", "proton.me",
+    "example.com", "example.org", "example.net", "domain.com",
+    "yourdomain.com", "email.com", "mysite.com", "yoursite.com",
+    "yourwebsite.com", "mywebsite.com", "placeholder.com", "provider.com",
 }
 
 # Preferred email prefixes (these get listed first)
@@ -258,49 +270,6 @@ COUNTRY_CODES = {
     "57": {"name": "Colombia", "min_digits": 10},
 }
 
-# Country hints for guessing country code from a location string
-COUNTRY_HINTS = {
-    # US
-    "united states": "+1", "usa": "+1", "u.s.a.": "+1", "america": "+1",
-    "alabama": "+1", "alaska": "+1", "arizona": "+1", "arkansas": "+1",
-    "california": "+1", "colorado": "+1", "connecticut": "+1", "delaware": "+1",
-    "florida": "+1", "georgia": "+1", "hawaii": "+1", "idaho": "+1",
-    "illinois": "+1", "indiana": "+1", "iowa": "+1", "kansas": "+1",
-    "kentucky": "+1", "louisiana": "+1", "maine": "+1", "maryland": "+1",
-    "massachusetts": "+1", "michigan": "+1", "minnesota": "+1",
-    "mississippi": "+1", "missouri": "+1", "montana": "+1", "nebraska": "+1",
-    "nevada": "+1", "new hampshire": "+1", "new jersey": "+1",
-    "new mexico": "+1", "new york": "+1", "north carolina": "+1",
-    "north dakota": "+1", "ohio": "+1", "oklahoma": "+1", "oregon": "+1",
-    "pennsylvania": "+1", "rhode island": "+1", "south carolina": "+1",
-    "south dakota": "+1", "tennessee": "+1", "texas": "+1", "utah": "+1",
-    "vermont": "+1", "virginia": "+1", "washington": "+1",
-    "west virginia": "+1", "wisconsin": "+1", "wyoming": "+1",
-    # Canada provinces
-    "ontario": "+1", "quebec": "+1", "british columbia": "+1", "alberta": "+1",
-    "manitoba": "+1", "saskatchewan": "+1", "nova scotia": "+1",
-    "new brunswick": "+1", "newfoundland": "+1", "prince edward island": "+1",
-    "canada": "+1",
-    # GCC
-    "united arab emirates": "+971", "uae": "+971", "dubai": "+971",
-    "abu dhabi": "+971", "sharjah": "+971", "ajman": "+971",
-    "saudi arabia": "+966", "saudi": "+966", "riyadh": "+966", "jeddah": "+966",
-    "qatar": "+974", "doha": "+974",
-    "kuwait": "+965", "kuwait city": "+965",
-    "oman": "+968", "muscat": "+968",
-    "bahrain": "+973", "manama": "+973",
-    # Europe
-    "germany": "+49", "deutschland": "+49", "de": "+49",
-    "united kingdom": "+44", "uk": "+44", "england": "+44", "london": "+44",
-    "france": "+33", "paris": "+33",
-    "spain": "+34", "madrid": "+34", "barcelona": "+34",
-    "italy": "+39", "rome": "+39", "milan": "+39",
-    "netherlands": "+31", "holland": "+31", "amsterdam": "+31",
-    # Africa
-    "morocco": "+212", "maroc": "+212", "casablanca": "+212", "rabat": "+212",
-    "marrakech": "+212", "tangier": "+212", "fes": "+212", "agadir": "+212",
-}
-
 # ─── Business niche keyword extraction ──────────────────────────────────────────
 
 def extract_niche_keywords(niche: str) -> list:
@@ -357,7 +326,10 @@ def is_spam_or_irrelevant(email: str) -> bool:
     domain = lower.split("@")[-1]
     if domain in SPAM_DOMAINS:
         return True
-    if any(t in domain for t in ("tracking", "analytics", "marketing", "newsletter", "mailchimp")):
+    # Word-boundary match, not substring: a legit domain like
+    # "marketingpros.com" must NOT be dropped, only obvious junk
+    # (e.g. tracking.…, newsletter.…, @mailchimp.com).
+    if re.search(r'\b(tracking|analytics|marketing|newsletter|mailchimp)\b', domain):
         return True
     local = email.split("@")[0]
     if len(local) > 40:
@@ -385,29 +357,12 @@ def is_valid_email(email: str) -> bool:
     return True
 
 
-def get_country_code_from_location(location: str) -> str | None:
-    """Guess the likely country code from a location string."""
-    loc_lower = location.lower()
-    for keyword, cc in COUNTRY_HINTS.items():
-        if keyword in loc_lower:
-            return cc
-    return None
-
-
 # ─── Phone Number Extraction & Normalization ──────────────────────────────────────
 
 # Phone number pattern (international + national formats)
 PHONE_RE = re.compile(
     r'(?:(?:\+|00)[1-9][0-9]{0,2}[\s\-/]*(?:\(0\))?[\s\-/]*|0)'
     r'[\s\-/]*\d{2,5}[\s\-/]*\d{2,4}[\s\-/]*\d{2,4}(?:[\s\-/]*\d{2,6})?'
-)
-
-# WhatsApp indicators on a page
-WHATSAPP_RE = re.compile(r'whatsapp', re.IGNORECASE)
-# Catch both wa.me/PHONE and api.whatsapp.com/send?phone=PHONE links
-WA_ME_RE = re.compile(
-    r'(?:wa\.me[\s\-/]*|api\.whatsapp\.com/send\?phone[=\-]?)(\d{7,15})',
-    re.IGNORECASE,
 )
 
 
@@ -466,44 +421,126 @@ def is_valid_phone(phone: str) -> bool:
     return False
 
 
-def extract_wa_me_number(text: str) -> str | None:
-    """Extract phone number from a wa.me link found on the page."""
-    match = WA_ME_RE.search(text)
-    if match:
-        num = match.group(1)
-        if len(num) >= 8 and len(num) <= 15:
-            # Check if number starts with a known country code AND has a
-            # plausible length (rejects 13-digit concatenated blobs).
-            for cc_len in [3, 2, 1]:
-                cc = num[:cc_len]
-                if cc in COUNTRY_CODES and is_valid_phone('+' + num):
-                    return '+' + num
+# ─── Site Scraper (Emails + Phones) ─────────────────────────────────────────────
+
+# Contact/about/team page paths probed on every site. Emails almost never live
+# on the homepage alone — they sit on contact, impressum, about or team pages.
+CONTACT_PATHS = [
+    "", "/contact", "/contact-us", "/contactez-nous", "/contacts",
+    "/about", "/about-us", "/a-propos", "/qui-sommes-nous",
+    "/team", "/our-team", "/meet-the-team", "/notre-equipe",
+    "/leadership", "/management", "/founders", "/board", "/executive",
+    "/company", "/uber-uns", "/ueber-uns", "/unternehmen",
+    "/impressum", "/imprint", "/legal-notice", "/legal",
+    "/careers", "/jobs", "/kontakt", "/kontaktformular",
+    "/contact.html", "/impressum.html", "/contacto", "/get-in-touch",
+]
+
+# Anchor-text/URL hints used to discover real contact pages from the homepage
+# (sites name these pages arbitrarily: /company/contact, /kontakt, /contacto...)
+CONTACT_LINK_HINTS = (
+    "contact", "kontakt", "impressum", "imprint", "about", "team",
+    "leadership", "management", "founders", "get in touch", "reach us",
+    "write us", "email", "mail", "contactez", "nous contacter",
+    "a-propos", "qui sommes", "uber uns", "kontaktformular",
+)
+
+# Browser-like UA for sites that block the descriptive BusinessFinder UA
+# (very common on GitHub Actions datacenter IPs behind Cloudflare etc.)
+_CHROME_UA_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+def _fetch_page(url: str) -> requests.Response | None:
+    """GET a page, retrying with a browser UA when the descriptive UA is blocked."""
+    for headers in (HEADERS, _CHROME_UA_HEADERS):
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+        except requests.RequestException:
+            continue
+        if resp.status_code in (403, 406, 429, 503):
+            continue  # likely bot-blocked — retry with the browser UA
+        return resp
     return None
 
 
-# ─── Site Scraper (Emails + Phones + WhatsApp) ───────────────────────────────────
+def _deobfuscate_emails(text: str) -> str:
+    """Decode common anti-scraper email obfuscation so EMAIL_RE can match:
+    - HTML entities:  info&#64;domain&#46;com  ->  info@domain.com
+    - Brackets:       info [at] domain [dot] com
+    - Parens:         info(at)domain(dot)com
+    - Spaced:         info @ domain . com
+    """
+    text = _html_mod.unescape(text)
+    text = re.sub(r"\s*\[at\]\s*", "@", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(at\)\s*", "@", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\[dot\]\s*", ".", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(dot\)\s*", ".", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+@\s+", "@", text)
+    text = re.sub(r"\s+\.\s+", ".", text)
+    return text
+
+
+def _discover_contact_links(home_html: str, base_url: str) -> list:
+    """Find internal contact/about/team page links from the homepage HTML."""
+    found = []
+    seen = set()
+    base_host = urlparse(base_url).netloc.lower()
+    for m in re.finditer(
+        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+        home_html,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        href = m.group(1).strip()
+        anchor = re.sub(r"<[^>]+>", " ", m.group(2)).lower()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
+            continue
+        try:
+            abs_url = urljoin(base_url, href)
+        except ValueError:
+            continue
+        if urlparse(abs_url).netloc.lower() != base_host:
+            continue  # external link
+        hint = f"{href.lower()} {anchor}"
+        if not any(h in hint for h in CONTACT_LINK_HINTS):
+            continue
+        norm = abs_url.rstrip("/")
+        if norm not in seen:
+            seen.add(norm)
+            found.append(norm)
+    return found
+
 
 def scrape_site(base_url: str) -> dict:
     """
-    Scrape a website for emails, phone numbers, WhatsApp indicators,
-    and decision-maker names/titles.
+    Scrape a website for emails, phone numbers, and decision-maker names/titles.
+
+    Emails are hunted on the homepage plus up to MAX_PAGES_PER_SITE contact /
+    about / team / impressum pages — both a fixed list of common paths AND
+    real contact-page links discovered from the homepage. Common email
+    obfuscation is decoded, and a browser UA is tried when sites block the
+    descriptive scraper UA (frequent on GitHub Actions runner IPs).
 
     Returns:
     {
       "emails": set of email strings,
       "phones": list of normalized phone strings (international format),
-      "has_whatsapp_mention": bool (whether the site mentions WhatsApp),
-      "wa_me_numbers": list of phones extracted from wa.me links on the site,
-      "site_whatsapp": bool (overall: has WhatsApp mention OR valid wa.me links),
       "people": list of dicts with {name, title, score} from most senior first,
     }
     """
     result = {
         "emails": set(),
         "phones": [],
-        "has_whatsapp_mention": False,
-        "wa_me_numbers": [],
-        "site_whatsapp": False,
         "people": [],
     }
 
@@ -511,68 +548,64 @@ def scrape_site(base_url: str) -> dict:
     if not base_url:
         return result
 
-    # Homepage and contact pages first (core data), then people pages for names
-    paths = [
-        "", "/contact", "/contact-us", "/contactez-nous",
-        "/team", "/about", "/about-us", "/a-propos", "/notre-equipe",
-        "/qui-sommes-nous", "/leadership", "/management",
-        "/founders", "/board", "/executive", "/company",
-        "/uber-uns", "/ueber-uns", "/unternehmen",
-        "/careers", "/jobs", "/impressum", "/imprint",
-    ]
-    # Deduplicate while preserving order
-    seen_paths = set()
-    unique_paths = []
-    for p in paths:
-        if p not in seen_paths:
-            seen_paths.add(p)
-            unique_paths.append(p)
+    home = base_url.rstrip("/") + "/"
 
-    urls = [urljoin(base_url + "/", p.lstrip("/")) for p in unique_paths]
+    # Start with the homepage (always fetched first), then contact pages
+    # discovered from its links, then the fixed common-path list.
+    seen_urls = {home}
+    urls = [home]
+
+    home_resp = _fetch_page(home)
+    if home_resp is not None and home_resp.status_code == 200:
+        home_text = home_resp.text
+        for u in _discover_contact_links(home_text, home):
+            if u not in seen_urls:
+                seen_urls.add(u)
+                urls.append(u)
+
+    for p in CONTACT_PATHS:
+        u = urljoin(home, p.lstrip("/")).rstrip("/")
+        if u not in seen_urls:
+            seen_urls.add(u)
+            urls.append(u)
+
+    # Cap total pages probed per site (homepage + up to MAX_PAGES_PER_SITE)
     urls = urls[:MAX_PAGES_PER_SITE + 1]
 
     seen_phones = set()
     all_html_chunks = []
 
-    for page_url in urls:
+    def _harvest(text: str):
+        """Extract emails + phones from one page's HTML into `result`."""
+        all_html_chunks.append(text)
+
+        # ── Emails (decode obfuscation first) ──
+        raw_emails = EMAIL_RE.findall(_deobfuscate_emails(text))
+        for em in raw_emails:
+            if is_valid_email(em) and not is_spam_or_irrelevant(em):
+                result["emails"].add(em.lower())
+
+        # ── Phone numbers ──
+        raw_phones = PHONE_RE.findall(text)
+        for p in raw_phones:
+            normalized = normalize_phone(p)
+            if normalized and normalized not in seen_phones:
+                if normalized.startswith('+') and not is_valid_phone(normalized):
+                    continue
+                seen_phones.add(normalized)
+                result["phones"].append(normalized)
+
+    # The homepage was already fetched above for link discovery — reuse its
+    # HTML for email/phone extraction instead of fetching it a second time.
+    if home_resp is not None and home_resp.status_code == 200:
+        _harvest(home_resp.text)
+
+    for page_url in urls[1:]:
         try:
-            resp = requests.get(
-                page_url,
-                headers=HEADERS,
-                timeout=10,
-            )
-            if resp.status_code != 200:
+            resp = _fetch_page(page_url)
+            if resp is None or resp.status_code != 200:
                 continue
-
-            text = resp.text
-            all_html_chunks.append(text)
-
-            # ── Emails ──
-            raw_emails = EMAIL_RE.findall(text)
-            for em in raw_emails:
-                if is_valid_email(em) and not is_spam_or_irrelevant(em):
-                    result["emails"].add(em.lower())
-
-            # ── WhatsApp mentions ──
-            if WHATSAPP_RE.search(text):
-                result["has_whatsapp_mention"] = True
-
-            # ── wa.me links ──
-            wa_num = extract_wa_me_number(text)
-            if wa_num and wa_num not in seen_phones:
-                seen_phones.add(wa_num)
-                result["wa_me_numbers"].append(wa_num)
-
-            # ── Phone numbers ──
-            raw_phones = PHONE_RE.findall(text)
-            for p in raw_phones:
-                normalized = normalize_phone(p)
-                if normalized and normalized not in seen_phones:
-                    if normalized.startswith('+') and not is_valid_phone(normalized):
-                        continue
-                    seen_phones.add(normalized)
-                    result["phones"].append(normalized)
-
+            _harvest(resp.text)
         except requests.RequestException:
             continue
 
@@ -581,11 +614,6 @@ def scrape_site(base_url: str) -> dict:
     # ── People detection (once, using all collected HTML) ──
     all_html = '\n'.join(all_html_chunks)
     result["people"] = extract_people_from_html(all_html)
-
-    # Determine overall WhatsApp availability
-    result["site_whatsapp"] = (
-        result["has_whatsapp_mention"] or len(result["wa_me_numbers"]) > 0
-    )
 
     return result
 
@@ -1208,92 +1236,6 @@ def generate_contact_email(
 
     email_local = replacements.get(pattern, f"{first}.{last}")
     return f"{email_local}@{domain}"
-
-
-# ─── WhatsApp Verification ───────────────────────────────────────────────────────
-
-def check_whatsapp_via_api(phone: str) -> bool:
-    """
-    Try to verify if a phone number has WhatsApp by visiting wa.me.
-
-    Note: This is approximate — wa.me may be blocked behind Cloudflare.
-    The function falls back gracefully: if the check fails, it returns
-    the site-level WhatsApp indicator result.
-    """
-    url = f"https://wa.me/{phone.lstrip('+')}"
-    try:
-        resp = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=10,
-            allow_redirects=True,
-        )
-        if resp.status_code == 200:
-            body = resp.text.lower()
-            if 'whatsapp' in body and ('send' in body or 'chat' in body or 'continue' in body):
-                return True
-        return False
-    except requests.RequestException:
-        return False
-
-
-def get_whatsapp_phones(site_data: dict, location: str = "") -> list:
-    """
-    Get the list of phone numbers that are confirmed to have WhatsApp.
-
-    Priority order:
-    1. Numbers from wa.me links on the site (most reliable indicator)
-    2. Numbers from site if the site mentions WhatsApp
-    3. Numbers verified via wa.me API check
-
-    For national format numbers (starting with 0), tries to guess
-    the country code from the location string.
-    """
-    confirmed = []
-    seen = set()
-
-    # 1. wa.me links on the site — these are explicitly WhatsApp numbers
-    for num in site_data["wa_me_numbers"]:
-        if num not in seen:
-            seen.add(num)
-            confirmed.append((num, True, "wa.me link on site"))
-
-    # 2. If site mentions WhatsApp, try to verify found phone numbers.
-    #    Only numbers that convert to a VALID international format are kept —
-    #    otherwise 7-digit scraps like "0130227" would become junk WhatsApp
-    #    links.
-    if site_data["site_whatsapp"]:
-        country_code = get_country_code_from_location(location) if location else None
-        for num in site_data["phones"]:
-            if num not in seen:
-                seen.add(num)
-                if num.startswith('0') and country_code:
-                    international = country_code + num[1:]
-                    if is_valid_phone(international):
-                        confirmed.append((international, True, "site mentions WhatsApp"))
-                    continue
-                if is_valid_phone(num):
-                    confirmed.append((num, True, "site mentions WhatsApp"))
-
-    # 3. For remaining phones (site has no WhatsApp indicators), try wa.me API
-    if not site_data["site_whatsapp"]:
-        country_code = get_country_code_from_location(location) if location else None
-        for num in site_data["phones"]:
-            if num not in seen:
-                if num.startswith('0') and country_code:
-                    international = country_code + num[1:]
-                    if is_valid_phone(international):
-                        has_wa = check_whatsapp_via_api(international)
-                        if has_wa:
-                            confirmed.append((international, True, "wa.me API check"))
-                        continue
-                if is_valid_phone(num):
-                    has_wa = check_whatsapp_via_api(num)
-                    seen.add(num)
-                    if has_wa:
-                        confirmed.append((num, True, "wa.me API check"))
-
-    return [(num, source) for num, _, source in confirmed]
 
 
 # ─── Geocoding ───────────────────────────────────────────────────────────────────
@@ -2024,9 +1966,7 @@ CSV_FIELDS = [
     "Company Name",
     "Website",
     "Source",
-    "WhatsApp Link",
     "Phone Number",
-    "WhatsApp Source",
     "Contact Person",
     "Contact Title",
     "Contact Email",
@@ -2062,6 +2002,8 @@ def save_partial_results(filename: str, results: list):
     - Writes UTF-8 BOM for proper Google Sheets import (utf-8-sig adds the BOM).
     - Deduplicates rows by (Company Name, Website) pair.
     - Ensures no None values slip into the output.
+    - Projects each row onto the CSV columns: rows carry internal sort keys
+      (e.g. "__tier") that DictWriter would reject as unknown fields.
     """
     results = _dedup_results(results)
 
@@ -2069,7 +2011,8 @@ def save_partial_results(filename: str, results: list):
         with open(filename, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writeheader()
-            writer.writerows(results)
+            rows = [{k: v for k, v in r.items() if k in CSV_FIELDS} for r in results]
+            writer.writerows(rows)
     except IOError as e:
         print(f"  {_WARN} Could not save intermediate results: {e}")
 
@@ -2087,7 +2030,7 @@ def main():
     # Parse CLI args
     args = sys.argv[1:]
     if not args or "-h" in args or "--help" in args:
-        print("Business Finder — Find companies in ANY niche with emails & WhatsApp")
+        print("Business Finder — Find companies in ANY niche with emails")
         print()
         print("Usage:")
         print(f"  python {os.path.basename(__file__)} <niche> <location>")
@@ -2181,15 +2124,21 @@ def main():
     print(f"\n{_INFO} Found {len(elements)} candidate businesses on OpenStreetMap.")
     if target_count > 0:
         print(f"       Targeting {target_count} results — fills best-first:")
-        print(f"       1) email+WhatsApp  2) emails only  3) WhatsApp only  4) website only")
+        print(f"       1) companies with emails  2) website only")
     print()
 
     # Step 3: Search HERE API (if API key is available — 30k free req/mo)
-    here_results = here_search(niche, location, limit=min(500, target_count or 100))
+    here_results = here_search(
+        niche, location,
+        limit=min(500, (target_count or 100) * POOL_MULTIPLIER),
+    )
 
     # Step 3b: Google organic search (free, no API key needed)
     print(f"\n{_ARROW} Searching Google for '{niche}' businesses (organic results)...")
-    google_results = search_google_businesses(niche, location, limit=max(150, target_count or 150))
+    google_results = search_google_businesses(
+        niche, location,
+        limit=max(150, (target_count or 150) * POOL_MULTIPLIER),
+    )
     if google_results:
         print(f"  {_INFO} Google found {len(google_results)} potential businesses.")
     else:
@@ -2201,17 +2150,19 @@ def main():
     ddg_results = []
     if len(google_results) < 60:
         print(f"\n{_ARROW} Searching DuckDuckGo for '{niche}' businesses (fallback)...")
-        ddg_results = search_duckduckgo_businesses(niche, location, limit=max(150, target_count or 150))
+        ddg_results = search_duckduckgo_businesses(
+            niche, location,
+            limit=max(150, (target_count or 150) * POOL_MULTIPLIER),
+        )
         if ddg_results:
             print(f"  {_INFO} DuckDuckGo found {len(ddg_results)} potential businesses.")
         else:
             print(f"       No businesses found via DuckDuckGo search.")
 
-    # Step 4: Scrape websites for emails, phones, and WhatsApp
+    # Step 4: Scrape websites for emails, phones, and key people
     results = []
     skipped_no_name = 0
     skipped_no_website = 0
-    skipped_no_whatsapp = 0
     skipped_no_email = 0
     errors = 0
     here_count = 0
@@ -2283,10 +2234,15 @@ def main():
         print(f"  {_INFO} Skipped {skipped_not_relevant} OSM companies that don't match '{niche}'.")
 
     # Broad fill pass: when a target is requested and the niche-filtered pool
-    # is still smaller than it, add the remaining OSM companies that have a
-    # name AND a website even if they don't match the niche. The worker still
-    # needs a real site to scrape, and without this pass --limit 500 stops at
-    # whatever the strict+relaxed filters returned (often < 20).
+    # is still smaller than the target, add the remaining OSM companies that
+    # have a name AND a website even if they don't match the niche. The worker
+    # still needs a real site to scrape, and without this pass --limit 500
+    # stops at whatever the strict+relaxed filters returned (often < 20).
+    # NOTE: this pass is capped at the plain target (NOT POOL_MULTIPLIER) — it
+    # is the only source of OFF-niche candidates, and scaling it would pad an
+    # "IT" list with restaurants/barbers that happen to have emails. The
+    # POOL_MULTIPLIER is applied only to the niche-targeted sources
+    # (HERE/Google/DuckDuckGo) which return on-niche companies.
     if target_count > 0 and len(valid_companies) < target_count:
         existing_domains = {urlparse(w).netloc.lower() for _, w, _ in valid_companies}
         fill_added = 0
@@ -2387,7 +2343,6 @@ def main():
         print(f"\n{_WARN} No companies with names and websites found.")
         save_partial_results(csv_filename, [])
         print(f"{_CROSS} Nothing to process.")
-        skipped_no_whatsapp = 0
         skipped_no_email = 0
         errors = 0
     else:
@@ -2410,19 +2365,14 @@ def main():
                 c_data = scrape_site(c_website)
                 c_emails = c_data["emails"]
                 c_sorted = sort_emails_by_relevance(c_emails) if c_emails else []
-                c_wa = get_whatsapp_phones(c_data, location)
 
                 # Quality tier used to fill the --limit quota best-first:
-                # 1 = emails + WhatsApp (best), 2 = emails only,
-                # 3 = WhatsApp only, 4 = website only (last-resort filler).
-                if c_sorted and c_wa:
+                # 1 = companies with emails (best), 2 = website only
+                # (last-resort filler).
+                if c_sorted:
                     tier = 1
-                elif c_sorted:
-                    tier = 2
-                elif c_wa:
-                    tier = 3
                 else:
-                    tier = 4
+                    tier = 2
 
                 c_people = c_data.get("people", [])
                 c_person = c_title = c_email = ""
@@ -2436,14 +2386,20 @@ def main():
                     c_email = generate_contact_email(c_person, c_domain,
                                                      c_pattern or '{first}.{last}')
                 elif c_emails:
+                    # Prefer a non-generic address; fall back to the best
+                    # scraped email so gmail/outlook-only rows (very common for
+                    # small businesses) still get a usable Contact Email.
                     for em in c_sorted:
                         if em.split('@')[0].lower() not in GENERIC_EMAIL_LOCALS:
                             c_email = em
                             break
+                    if not c_email:
+                        c_email = c_sorted[0]
 
-                # Try Google search for the founder — only for the best tier
-                # (emails + WhatsApp) to keep large runs fast (1 req/sec lock).
-                if tier == 1:
+                # Try Google search for the founder — only when the site
+                # itself yielded no decision-maker, so large runs stay fast
+                # (the search is serialized at 1 request per second).
+                if tier == 1 and not c_person:
                     google_result = search_google_founder(c_name)
                     if google_result:
                         g_name, g_title = google_result
@@ -2463,17 +2419,13 @@ def main():
                 if not founder_source:
                     founder_source = "none"
 
-                c_phone = c_wa[0][0] if c_wa else ""
-                c_source = c_wa[0][1] if c_wa else ""
-                c_wa_link = f"https://wa.me/{re.sub(r'\D', '', c_phone)}" if c_phone else ""
+                c_phone = c_data["phones"][0] if c_data["phones"] else ""
 
                 row = {
                     "Company Name": _clean_csv_val(c_name),
                     "Website": _clean_csv_val(c_website),
                     "Source": _clean_csv_val(c_data_source),
-                    "WhatsApp Link": _clean_csv_val(c_wa_link),
                     "Phone Number": _clean_csv_val(c_phone),
-                    "WhatsApp Source": _clean_csv_val(c_source),
                     "Contact Person": _clean_csv_val(c_person),
                     "Contact Title": _clean_csv_val(c_title),
                     "Contact Email": _clean_csv_val(c_email),
@@ -2503,7 +2455,7 @@ def main():
                 future_map = {executor.submit(_worker, n, w, s): (n, w, s)
                               for n, w, s in valid_companies}
 
-                tier1_count = 0  # best-quality rows (email + WhatsApp)
+                tier1_count = 0  # best-quality rows (companies with emails)
 
                 for future in as_completed(future_map):
                     # Early exit only when the BEST tier already fills the
@@ -2515,7 +2467,7 @@ def main():
                             f.cancel()
                         pending = sum(1 for f in future_map if not f.done())
                         print(f"\n  {_INFO} Reached target of {target_count} top-quality"
-                              f" (email+WhatsApp) results. {pending} unprocessed"
+                              f" (email) results. {pending} unprocessed"
                               f" candidates remaining.\n")
                         break
 
@@ -2528,12 +2480,10 @@ def main():
                         results.append(row)
                         idx = len(results)
                         progress = f"{idx}/{target_count}" if target_count > 0 else str(idx)
-                        tier_tag = {1: "email+WA", 2: "email", 3: "WA", 4: "site"}[tier]
-                        wa_ok = _CHECK if tier in (1, 3) else _WARN
+                        tier_tag = {1: "email", 2: "site"}[tier]
                         print(f"  [{progress}] {info['name']} [{tier_tag}]")
                         print(f"         {_ARROW} {info['domain']}")
-                        print(f"         {info['n_emails']} email(s) | WhatsApp {wa_ok}"
-                              f" | Result {progress}")
+                        print(f"         {info['n_emails']} email(s) | Result {progress}")
                         if info['contact_person']:
                             print(f"         {_ARROW} Person: {info['contact_person']}"
                                   f" ({info['contact_title']})")
@@ -2579,11 +2529,9 @@ def main():
     total = len(final_results)
     with_emails = sum(1 for r in final_results if r["All Emails Found"])
     total_emails = sum(len(r["All Emails Found"].split("; ")) for r in final_results if r["All Emails Found"])
-    with_whatsapp = sum(1 for r in final_results if r["WhatsApp Link"])
 
     print(f"  Total companies:                 {total}")
     print(f"  Companies with emails:          {with_emails}")
-    print(f"  Companies with WhatsApp:        {with_whatsapp}")
     print(f"  Total emails collected:         {total_emails}")
     if skipped_no_name:
         print(f"  Skipped (no name):              {skipped_no_name}")
@@ -2610,8 +2558,6 @@ def main():
     print(f"    1. Open sheets.google.com and create a new spreadsheet")
     print(f"    2. File > Import > Upload > select the CSV file")
     print(f"    3. Choose 'Replace current sheet' or 'New sheet'")
-    print(f"    4. The WhatsApp Link column has clickable hyperlinks")
-    print(f"\n  Each result includes a clickable WhatsApp link.")
     print(f"  Open the CSV file in Excel or any spreadsheet app to see the full results.")
 
 

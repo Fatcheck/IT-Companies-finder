@@ -324,9 +324,8 @@ def load_csv(filepath: str) -> list[dict]:
     """
     Load a CSV file and return a list of rows as dicts.
     Handles both:
-      - New format: Company Name, Website, WhatsApp Link, Phone Number,
-        WhatsApp Source, Contact Person, Contact Title, Contact Email,
-        Founder Source, All Emails Found
+      - New format: Company Name, Website, Phone Number, Contact Person,
+        Contact Title, Contact Email, Founder Source, All Emails Found
       - Old format: name, website, emails
     """
     rows = []
