@@ -63,9 +63,10 @@ import time
 import signal
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, parse_qs
 from email.utils import parseaddr
 
+import html as _html_mod
 import requests
 
 # ─── Configuration ───────────────────────────────────────────────────────────────
@@ -450,7 +451,16 @@ def is_valid_phone(phone: str) -> bool:
         if cc in COUNTRY_CODES:
             info = COUNTRY_CODES[cc]
             remaining = len(digits) - cc_len
-            return remaining >= info["min_digits"]
+            if remaining < info["min_digits"]:
+                return False
+            # NANP (US/Canada) numbers are exactly 10 digits. Anything longer
+            # is almost always several numbers scraped as one blob (e.g.
+            # "252 026 0925 25" -> +1252026092525, a 13-digit fake).
+            if cc == "1":
+                return remaining == info["min_digits"]
+            # Other numbering plans: at most one extra digit beyond the
+            # minimum (e.g. Germany 10-11, Brazil 10-11). Reject blobs.
+            return remaining <= info["min_digits"] + 1
     return False
 
 
@@ -460,10 +470,11 @@ def extract_wa_me_number(text: str) -> str | None:
     if match:
         num = match.group(1)
         if len(num) >= 8 and len(num) <= 15:
-            # Check if number starts with a known country code
+            # Check if number starts with a known country code AND has a
+            # plausible length (rejects 13-digit concatenated blobs).
             for cc_len in [3, 2, 1]:
                 cc = num[:cc_len]
-                if cc in COUNTRY_CODES:
+                if cc in COUNTRY_CODES and is_valid_phone('+' + num):
                     return '+' + num
     return None
 
@@ -698,7 +709,7 @@ def extract_people_from_html(html_text: str) -> list:
             nm = name_matches[-1]  # closest before title
             name = nm.group(0)
             name_lower = name.lower()
-            if not _is_real_person_name(name) and name_lower not in seen_names:
+            if _is_real_person_name(name) and name_lower not in seen_names:
                 seen_names.add(name_lower)
                 rank = _get_title_rank(title_raw)
                 found.append({
@@ -715,7 +726,7 @@ def extract_people_from_html(html_text: str) -> list:
         if nm:
             name = nm.group(0)
             name_lower = name.lower()
-            if not _is_real_person_name(name) and name_lower not in seen_names:
+            if _is_real_person_name(name) and name_lower not in seen_names:
                 seen_names.add(name_lower)
                 rank = _get_title_rank(title_raw)
                 found.append({
@@ -736,7 +747,7 @@ def extract_people_from_html(html_text: str) -> list:
         if nm:
             name = nm.group(0)
             name_lower = name.lower()
-            if not _is_real_person_name(name) and name_lower not in seen_names:
+            if _is_real_person_name(name) and name_lower not in seen_names:
                 context = hm.group(0)[len(heading_text):]
                 title_match = TITLE_RE.search(context)
                 title = title_match.group(0) if title_match else "Team Member"
@@ -901,6 +912,82 @@ def search_google_businesses(niche: str, location: str, limit: int = 50) -> list
                 "name": name,
                 "website": normalize_url(url),
                 "source": "Google",
+            })
+            if len(results) >= limit:
+                break
+
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+# ─── DuckDuckGo Organic Business Discovery (free, no API key) ────────────────────
+# Google frequently blocks datacenter IPs (GitHub Actions runners). DuckDuckGo's
+# HTML endpoint is a reliable fallback that needs no API key.
+
+
+def search_duckduckgo_businesses(niche: str, location: str, limit: int = 100) -> list:
+    """
+    Search DuckDuckGo HTML for '{niche} in {location}' and extract business
+    names + websites from the organic results.
+
+    Returns a list of dicts: {name, website, source: "DuckDuckGo"}.
+    Best-effort — DDG may throttle or return no usable results.
+    """
+    results = []
+    seen_domains = set()
+
+    queries = [
+        f"{niche} companies in {location}",
+        f"{niche} in {location}",
+        f"best {niche} companies in {location}",
+        f"top {niche} in {location}",
+    ]
+
+    for query in queries:
+        try:
+            resp = requests.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                headers=_GOOGLE_BIZ_HEADERS,
+                timeout=10,
+            )
+        except requests.RequestException:
+            continue
+
+        if resp.status_code != 200:
+            continue
+
+        # DDG HTML results: <a rel="nofollow" class="result__a" href="...">Title</a>
+        # Links are wrapped in a redirect: //duckduckgo.com/l/?uddg=<encoded-url>
+        for m in re.finditer(
+            r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            resp.text,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            href = m.group(1)
+            raw_name = re.sub(r'<[^>]+>', '', m.group(2)).strip()
+            name = _html_mod.unescape(raw_name).strip()
+            if "uddg=" in href:
+                # parse_qs already URL-decodes the uddg value — do NOT unquote
+                # again or percent-encoded URLs get corrupted (double-decode).
+                qs = parse_qs(urlparse(href).query)
+                href = qs.get("uddg", [href])[0] if qs else href
+            domain = urlparse(href).netloc.lower()
+            if not domain or not name:
+                continue
+            if any(skip in domain for skip in ["google.com", "youtube.com", "facebook.com",
+                                                "instagram.com", "twitter.com", "linkedin.com",
+                                                "pinterest.com", "yelp.com", "duckduckgo.com"]):
+                continue
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+            results.append({
+                "name": name,
+                "website": normalize_url(href),
+                "source": "DuckDuckGo",
             })
             if len(results) >= limit:
                 break
@@ -2105,6 +2192,18 @@ def main():
     else:
         print(f"       No businesses found via Google search.")
 
+    # Step 3c: DuckDuckGo fallback (free, no API key) — Google frequently
+    # blocks datacenter IPs (GitHub Actions runners), so DDG keeps the
+    # candidate pool full when Google comes back empty.
+    ddg_results = []
+    if len(google_results) < 60:
+        print(f"\n{_ARROW} Searching DuckDuckGo for '{niche}' businesses (fallback)...")
+        ddg_results = search_duckduckgo_businesses(niche, location, limit=150)
+        if ddg_results:
+            print(f"  {_INFO} DuckDuckGo found {len(ddg_results)} potential businesses.")
+        else:
+            print(f"       No businesses found via DuckDuckGo search.")
+
     # Step 4: Scrape websites for emails, phones, and WhatsApp
     results = []
     skipped_no_name = 0
@@ -2224,6 +2323,30 @@ def main():
 
     if google_count > 0:
         print(f"\n{_INFO} Added {google_count} unique {'business' if google_count == 1 else 'businesses'} from Google search.")
+
+    # Add DuckDuckGo results (dedup by name/domain with everything above)
+    ddg_names = set()
+    ddg_count = 0
+    for biz in ddg_results:
+        biz_name = biz["name"]
+        biz_website = biz["website"]
+        biz_domain = urlparse(biz_website).netloc.lower()
+        name_lower = biz_name.lower().strip()
+        if name_lower in ddg_names:
+            continue
+        ddg_names.add(name_lower)
+        already_have = any(
+            name_lower == n.lower().strip() or
+            biz_domain == urlparse(w).netloc.lower() or
+            name_lower in n.lower() or n.lower() in name_lower
+            for n, w, _ in valid_companies
+        )
+        if not already_have:
+            valid_companies.append((biz_name, biz_website, "DuckDuckGo"))
+            ddg_count += 1
+
+    if ddg_count > 0:
+        print(f"\n{_INFO} Added {ddg_count} unique {'business' if ddg_count == 1 else 'businesses'} from DuckDuckGo search.")
 
     total_valid = len(valid_companies)
     if total_valid == 0:

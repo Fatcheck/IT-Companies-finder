@@ -60,6 +60,10 @@ jobs:
         env:
           MAX_WORKERS: ${{ inputs.workers }}
           MAX_PAGES_PER_SITE: ${{ inputs.pages }}
+          # Optional: add a free HERE API key (developer.here.com, 30k req/mo)
+          # as a repository secret named HERE_API_KEY to unlock ~500 more
+          # candidate businesses per run (they come with websites attached).
+          HERE_API_KEY: ${{ secrets.HERE_API_KEY }}
 
       - name: Clean results with Super Clean
         run: |
