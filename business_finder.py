@@ -10,9 +10,9 @@ this script:
    - Phone numbers
 3. Infers the email pattern from found company emails and generates the
    decision-maker's email address.
-4. Fills the --limit quota best-first: companies with emails first, then
-   website-only companies — so --limit 500 really returns ~500 rows instead
-   of stopping at a handful.
+4. Keeps only companies that have at least one valid email — website-only
+   companies are skipped, so --limit 500 really returns ~500 rows WITH
+   emails instead of a handful of emails padded with website-only filler.
 5. Saves results to a CSV file with contact info.
 
 USAGE:
@@ -67,6 +67,12 @@ from email.utils import parseaddr
 
 import html as _html_mod
 import requests
+
+# Allow importing the shared email validator from the same folder (same
+# pattern as super_clean.py) so the CSV is cleaned with exactly the same
+# rules the sender applies before sending.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gmail_email_sender import is_valid_target_email  # noqa: E402
 
 # ─── Configuration ───────────────────────────────────────────────────────────────
 # How long to wait between website requests (seconds).
@@ -2123,8 +2129,8 @@ def main():
     target_count = MAX_COMPANIES
     print(f"\n{_INFO} Found {len(elements)} candidate businesses on OpenStreetMap.")
     if target_count > 0:
-        print(f"       Targeting {target_count} results — fills best-first:")
-        print(f"       1) companies with emails  2) website only")
+        print(f"       Targeting {target_count} results — only companies")
+        print(f"       with at least one valid email are kept.")
     print()
 
     # Step 3: Search HERE API (if API key is available — 30k free req/mo)
@@ -2364,15 +2370,22 @@ def main():
             try:
                 c_data = scrape_site(c_website)
                 c_emails = c_data["emails"]
+                # Clean the scraped emails with the exact validator the sender
+                # and super_clean use, so junk/placeholder addresses never
+                # reach the CSV.
                 c_sorted = sort_emails_by_relevance(c_emails) if c_emails else []
+                c_sorted = [e for e in c_sorted if is_valid_target_email(e)]
 
-                # Quality tier used to fill the --limit quota best-first:
-                # 1 = companies with emails (best), 2 = website only
-                # (last-resort filler).
-                if c_sorted:
-                    tier = 1
-                else:
-                    tier = 2
+                # Only companies with at least one valid email are kept — no
+                # website-only filler rows. This is what makes --limit 500
+                # mean 500 rows that actually have emails.
+                if not c_sorted:
+                    return None, {
+                        "skip": "no valid email",
+                        "name": c_name,
+                        "domain": c_domain,
+                    }
+                tier = 1
 
                 c_people = c_data.get("people", [])
                 c_person = c_title = c_email = ""
@@ -2382,10 +2395,10 @@ def main():
                     c_person = top["name"]
                     c_title = top["title"]
                     founder_source = "website"
-                    c_pattern = infer_email_pattern(c_emails, c_domain)
+                    c_pattern = infer_email_pattern(set(c_sorted), c_domain)
                     c_email = generate_contact_email(c_person, c_domain,
                                                      c_pattern or '{first}.{last}')
-                elif c_emails:
+                elif c_sorted:
                     # Prefer a non-generic address; fall back to the best
                     # scraped email so gmail/outlook-only rows (very common for
                     # small businesses) still get a usable Contact Email.
@@ -2409,7 +2422,7 @@ def main():
                             c_person = g_name
                             c_title = g_title
                             founder_source = "Google search"
-                            c_pattern = infer_email_pattern(c_emails, c_domain)
+                            c_pattern = infer_email_pattern(set(c_sorted), c_domain)
                             c_email = generate_contact_email(
                                 c_person, c_domain,
                                 c_pattern or '{first}.{last}',
@@ -2458,9 +2471,9 @@ def main():
                 tier1_count = 0  # best-quality rows (companies with emails)
 
                 for future in as_completed(future_map):
-                    # Early exit only when the BEST tier already fills the
-                    # quota. Lower tiers are still useful, so otherwise we keep
-                    # going and sort/truncate best-first after the pool runs.
+                    # Every written row has an email, so once the quota is
+                    # filled with email rows we stop early; otherwise keep
+                    # going until the candidate pool is exhausted.
                     if target_count > 0 and tier1_count >= target_count:
                         _target_reached.set()
                         for f in future_map:
@@ -2480,8 +2493,7 @@ def main():
                         results.append(row)
                         idx = len(results)
                         progress = f"{idx}/{target_count}" if target_count > 0 else str(idx)
-                        tier_tag = {1: "email", 2: "site"}[tier]
-                        print(f"  [{progress}] {info['name']} [{tier_tag}]")
+                        print(f"  [{progress}] {info['name']} [email]")
                         print(f"         {_ARROW} {info['domain']}")
                         print(f"         {info['n_emails']} email(s) | Result {progress}")
                         if info['contact_person']:
@@ -2497,6 +2509,8 @@ def main():
                         skip = info.get("skip", "unknown")
                         if skip.startswith("error"):
                             errors += 1
+                        elif skip == "no valid email":
+                            skipped_no_email += 1
 
                         if skip != "cancelled":
                             print(f"  [-] {info['name']}")
@@ -2506,9 +2520,9 @@ def main():
         except KeyboardInterrupt:
             _target_reached.set()
 
-        # Final save — sort best-first (tier 1 -> 4) so the CSV starts with
-        # the most complete leads, then truncate to the requested target so
-        # --limit 500 really yields ~500 rows.
+        # Final save — truncate to the requested target. Every row has an
+        # email (website-only companies were skipped), so --limit 500 really
+        # yields up to 500 rows with emails.
         if target_count > 0 and len(results) > target_count:
             results.sort(key=lambda r: r.get("__tier", 4))
             kept = len(results)
@@ -2537,6 +2551,8 @@ def main():
         print(f"  Skipped (no name):              {skipped_no_name}")
     if skipped_no_website:
         print(f"  No website listed:              {skipped_no_website}")
+    if skipped_no_email:
+        print(f"  Skipped (no valid email):       {skipped_no_email}")
     if skipped_not_relevant:
         print(f"  Skipped (not in niche):         {skipped_not_relevant}")
     if errors:

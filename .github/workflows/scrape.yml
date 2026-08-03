@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       limit:
-        description: 'Target number of rows (fills best-first: companies with emails, then website-only)'
+        description: 'Target number of rows — only companies with at least one valid email are kept (website-only companies are skipped)'
         required: false
         default: '500'
         type: string
