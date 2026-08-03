@@ -24,24 +24,24 @@ USAGE:
     # Preview mode (shows what would be sent, no actual sending)
     python gmail_email_sender.py --preview businesses.csv
 
-    # Send emails
-    python gmail_email_sender.py --sender youremail@gmail.com \\
+    # Send emails (sender + app password are preconfigured below in
+    # DEFAULT_SENDER / DEFAULT_APP_PASSWORD, so they can be omitted)
+    python gmail_email_sender.py businesses.csv
+
+    # Override credentials if needed
+    python gmail_email_sender.py --sender other@gmail.com \\
         --app-password "xxxx xxxx xxxx xxxx" \\
         businesses.csv
 
     # Send with custom subject/template (tailor to any niche)
-    python gmail_email_sender.py --sender youremail@gmail.com \\
-        --app-password "xxxx xxxx xxxx xxxx" \\
+    python gmail_email_sender.py \\
         --subject "Partnership Opportunity at {company}" \\
         --template my_template.html \\
         --limit 10 \\
         businesses.csv
 
     # Resume from where you left off (skips already-sent contacts)
-    python gmail_email_sender.py --sender youremail@gmail.com \\
-        --app-password "xxxx xxxx xxxx xxxx" \\
-        --logfile sent_log.csv \\
-        businesses.csv
+    python gmail_email_sender.py --logfile sent_log.csv businesses.csv
 
 NOTES / ETIQUETTE:
   - Gmail's sending limit is ~500 emails/day for personal accounts.
@@ -84,6 +84,11 @@ DEFAULT_DELAY_MAX = 60
 
 # Default CSV log file for tracking sent emails
 DEFAULT_SENT_LOG = "sent_emails_log.csv"
+
+# Preconfigured Gmail credentials (used when no --sender / --app-password
+# flags and no GMAIL_SENDER / GMAIL_APP_PASSWORD env vars are provided).
+DEFAULT_SENDER = "forfewdollars@gmail.com"
+DEFAULT_APP_PASSWORD = "mdtf qxjx moss pfxx"
 
 # Default email subject template (can be overridden via --subject).
 # Available variables: {company}, {name}, {title}, {email}, {website}
@@ -676,13 +681,13 @@ def parse_args():
     parser.add_argument(
         "--sender", "-s",
         help="Your Gmail address (e.g., youraccount@gmail.com)",
-        default=os.environ.get("GMAIL_SENDER", ""),
+        default=os.environ.get("GMAIL_SENDER", DEFAULT_SENDER),
     )
     parser.add_argument(
         "--app-password", "-p",
         help="Gmail App Password (16 chars). Not your regular password! "
              "Can also be set via GMAIL_APP_PASSWORD env variable.",
-        default=os.environ.get("GMAIL_APP_PASSWORD", ""),
+        default=os.environ.get("GMAIL_APP_PASSWORD", DEFAULT_APP_PASSWORD),
     )
     parser.add_argument(
         "--sender-name",
@@ -785,6 +790,11 @@ def parse_args():
 
     if not args.sender_name:
         args.sender_name = args.sender.split("@")[0] if args.sender else "Sender"
+
+    # Normalise the app password: Gmail generates 16-char passwords grouped
+    # as "xxxx xxxx xxxx xxxx"; spaces can cause SMTP auth failures, so strip
+    # them before sending.
+    args.app_password = args.app_password.replace(" ", "")
 
     return args
 
@@ -922,8 +932,8 @@ def main():
         print(f"  {_CHECK} Preview complete — {len(contacts)} email(s) ready.")
         total_delay = len(contacts) * ((args.delay_min + args.delay_max) / 2)
         print(f"  Estimated time to send: ~{total_delay / 60:.0f} minute(s)")
-        print(f"  To send, run: python gmail_email_sender.py --sender YOUR_EMAIL"
-              f" --app-password \"YOUR_APP_PW\" \"{csv_path}\"")
+        print(f"  To send, run: python gmail_email_sender.py \"{csv_path}\""
+              f"  (sender & app password are preconfigured in the script)")
         print(f"{_LINE}")
         return
 
