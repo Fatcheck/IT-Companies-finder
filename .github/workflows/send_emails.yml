@@ -96,8 +96,11 @@ jobs:
             --delay-max "${{ inputs.delay_max }}" \
             ${{ inputs.preview && '--preview' || '' }}
         env:
-          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          # Unset secrets evaluate to empty strings, which would override the
+          # preconfigured defaults in gmail_email_sender.py -- so fall back to
+          # them explicitly (DEFAULT_SENDER / DEFAULT_APP_PASSWORD).
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER || 'forfewdollars@gmail.com' }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD || 'mdtf qxjx moss pfxx' }}
 
       - name: Upload sent log (artifact - download from Actions tab)
         uses: actions/upload-artifact@v4

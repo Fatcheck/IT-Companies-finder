@@ -681,13 +681,13 @@ def parse_args():
     parser.add_argument(
         "--sender", "-s",
         help="Your Gmail address (e.g., youraccount@gmail.com)",
-        default=os.environ.get("GMAIL_SENDER", DEFAULT_SENDER),
+        default=os.environ.get("GMAIL_SENDER") or DEFAULT_SENDER,
     )
     parser.add_argument(
         "--app-password", "-p",
         help="Gmail App Password (16 chars). Not your regular password! "
              "Can also be set via GMAIL_APP_PASSWORD env variable.",
-        default=os.environ.get("GMAIL_APP_PASSWORD", DEFAULT_APP_PASSWORD),
+        default=os.environ.get("GMAIL_APP_PASSWORD") or DEFAULT_APP_PASSWORD,
     )
     parser.add_argument(
         "--sender-name",
