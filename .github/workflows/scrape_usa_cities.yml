@@ -1,0 +1,140 @@
+name: Scrape Businesses - USA Cities (whole list)
+
+on:
+  workflow_dispatch:
+    inputs:
+      niche:
+        description: 'Business niche (e.g. "IT", "software", "fitness gym")'
+        required: false
+        default: 'IT'
+        type: string
+      limit:
+        description: 'Companies to find PER CITY — every city in the list gets up to this many rows with emails'
+        required: false
+        default: '500'
+        type: string
+      cities:
+        description: 'Optional ";" separated override list (e.g. "Austin, Texas; Seattle, Washington"). Leave empty to use the full USA_CITIES list in the script'
+        required: false
+        default: ''
+        type: string
+      start_city:
+        description: 'Skip the first N cities (resume a partial run)'
+        required: false
+        default: '0'
+        type: string
+      max_cities:
+        description: 'Only process the first N cities (0 = all)'
+        required: false
+        default: '0'
+        type: string
+      workers:
+        description: 'Parallel workers (default 30)'
+        required: false
+        default: '30'
+        type: string
+      pages:
+        description: 'Pages to check per site (default 15)'
+        required: false
+        default: '15'
+        type: string
+      pool:
+        description: 'Candidate pool multiplier per city (default 4)'
+        required: false
+        default: '4'
+        type: string
+
+env:
+  PYTHONUNBUFFERED: 1
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max (GitHub limit) — the whole USA list takes a while
+    permissions:
+      contents: write  # needed for the commit-back step
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run Business Finder (USA cities list)
+        run: |
+          # Build the --cities args only when the input is not empty. A bash
+          # array is used so semicolons/spaces in the city list survive
+          # word-splitting correctly (each city like "Austin, Texas" stays one
+          # argument).
+          CITIES_ARGS=()
+          if [ -n "${{ inputs.cities }}" ]; then
+            CITIES_ARGS+=(--cities "${{ inputs.cities }}")
+          fi
+
+          python business_finder_usa_cities.py \
+            --limit "${{ inputs.limit }}" \
+            --niche "${{ inputs.niche }}" \
+            --start-city "${{ inputs.start_city }}" \
+            --max-cities "${{ inputs.max_cities }}" \
+            "${CITIES_ARGS[@]}"
+        env:
+          MAX_WORKERS: ${{ inputs.workers }}
+          MAX_PAGES_PER_SITE: ${{ inputs.pages }}
+          POOL_MULTIPLIER: ${{ inputs.pool }}
+          # Optional: add a free HERE API key (developer.here.com, 30k req/mo)
+          # as a repository secret named HERE_API_KEY to unlock more candidate
+          # businesses per city (they come with websites attached).
+          HERE_API_KEY: ${{ secrets.HERE_API_KEY }}
+
+      - name: Clean results with Super Clean
+        run: |
+          # Scrub junk emails and drop companies with no valid email.
+          # Overwrites every finder CSV in place, so the committed files are
+          # the cleaned lists (the sender then uses the same files).
+          python super_clean.py --in-place --csv-dir .
+
+      - name: Upload CSV results (artifact - download from Actions tab)
+        uses: actions/upload-artifact@v4
+        with:
+          name: businesses-usa-cities-${{ github.run_id }}
+          path: "*.csv"
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Commit CSVs back to repository
+        run: |
+          # Stop early when the finder produced no CSVs.
+          shopt -s nullglob
+          csv_files=(*.csv)
+          if [ "${#csv_files[@]}" -eq 0 ]; then
+            echo "No CSV files found - nothing to commit."
+            exit 0
+          fi
+
+          # Configure git for the commit
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stage the CSVs
+          git add -- *.csv
+
+          # Commit only when there is something to commit. The message is fed
+          # through stdin (-F -) so the niche text and the [skip ci] marker
+          # can never be parsed as git arguments or pathspecs.
+          if ! git diff --cached --quiet; then
+            printf 'Add CSV results for %s / USA cities list [skip ci]\n' "$NICHE" | git commit -F -
+            git push
+            echo "Committed and pushed CSV results."
+          else
+            echo "No changes to commit - CSVs already up to date."
+          fi
+        env:
+          NICHE: ${{ inputs.niche }}

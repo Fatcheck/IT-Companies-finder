@@ -2032,67 +2032,17 @@ def signal_handler(sig, frame):
 
 # ─── Main ────────────────────────────────────────────────────────────────────────
 
-def main():
-    # Parse CLI args
-    args = sys.argv[1:]
-    if not args or "-h" in args or "--help" in args:
-        print("Business Finder — Find companies in ANY niche with emails")
-        print()
-        print("Usage:")
-        print(f"  python {os.path.basename(__file__)} <niche> <location>")
-        print(f"  python {os.path.basename(__file__)} --limit 30 <niche> <location>")
-        print()
-        print("Examples:")
-        print(f'  python {os.path.basename(__file__)} "fitness gym" "Denver, Colorado"')
-        print(f'  python {os.path.basename(__file__)} "dentist" "London, UK"')
-        print(f'  python {os.path.basename(__file__)} "real estate" "Dubai, UAE"')
-        print(f'  python {os.path.basename(__file__)} --limit 20 "restaurant" "Paris, France"')
-        print(f'  python {os.path.basename(__file__)} "IT" "Berlin, Germany"')
-        print()
-        print("Options:")
-        print("  --limit N   Max companies to process (default: unlimited)")
-        print("  -h, --help  Show this help")
-        sys.exit(0)
+def run_location(niche: str, location: str, max_companies: int = 0) -> str:
+    """Run the full business-finder pipeline for ONE location.
 
-    global MAX_COMPANIES
-    i = 0
-    niche = None
-    location_parts = []
+    Geocodes the location, discovers candidate businesses via OpenStreetMap /
+    HERE / Google / DuckDuckGo, scrapes each website for emails, phones and
+    decision-makers, and writes the results to a CSV named after the niche
+    and location (only companies with at least one valid email are kept).
 
-    while i < len(args):
-        if args[i] == "--limit":
-            if i + 1 >= len(args):
-                print(f"{_CROSS} --limit requires a number argument")
-                sys.exit(1)
-            try:
-                MAX_COMPANIES = int(args[i + 1])
-            except ValueError:
-                print(f"{_CROSS} --limit requires a number, got '{args[i + 1]}'")
-                sys.exit(1)
-            if MAX_COMPANIES < 1:
-                print(f"{_CROSS} --limit must be a positive number")
-                sys.exit(1)
-            i += 2
-        elif niche is None:
-            # First non-flag arg is the NICHE
-            niche = args[i]
-            i += 1
-        else:
-            # Remaining args are the LOCATION
-            location_parts.append(args[i])
-            i += 1
-
-    if not niche:
-        print(f"{_CROSS} Please provide a business niche (e.g., \"fitness gym\", \"restaurant\", \"IT\")")
-        print(f"  Usage: python {os.path.basename(__file__)} <niche> <location>")
-        sys.exit(1)
-
-    location = " ".join(location_parts)
-    if not location:
-        print(f"{_CROSS} Please provide a location (e.g., \"Denver, Colorado\", \"London, UK\")")
-        print(f"  Usage: python {os.path.basename(__file__)} <niche> <location>")
-        sys.exit(1)
-
+    ``max_companies`` is the target row count FOR THIS location (0 = no limit).
+    Returns the CSV filename that was written.
+    """
     # Set up signal handler for graceful Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -2106,27 +2056,27 @@ def main():
     print(_LINE)
     print(f"  Business Finder — Search for '{niche}' businesses")
     print(f"  Location: {location}")
-    if MAX_COMPANIES > 0:
-        print(f"  Max companies: {MAX_COMPANIES}")
+    if max_companies > 0:
+        print(f"  Max companies: {max_companies}")
     print(f"{_LINE}\n")
 
     # Step 1: Geocode
+    # NOTE: failures raise instead of sys.exit() so callers (e.g. the
+    # multi-city runner) can catch them and continue with the next city.
     print(f"{_ARROW} Geocoding location...")
     try:
         bbox = geocode(location)
     except (RuntimeError, ValueError) as e:
-        print(f"{_CROSS} {e}")
-        sys.exit(1)
+        raise RuntimeError(f"Geocoding failed for '{location}': {e}")
 
     # Step 2: Query Overpass (dynamic — works for any niche)
     print(f"\n{_ARROW} Querying OpenStreetMap for '{niche}' businesses (up to 180 seconds)...")
     try:
         elements = build_overpass_queries(bbox, niche)
     except (RuntimeError, ValueError) as e:
-        print(f"{_CROSS} {e}")
-        sys.exit(1)
+        raise RuntimeError(f"Overpass query failed for '{location}': {e}")
 
-    target_count = MAX_COMPANIES
+    target_count = max_companies
     print(f"\n{_INFO} Found {len(elements)} candidate businesses on OpenStreetMap.")
     if target_count > 0:
         print(f"       Targeting {target_count} results — only companies")
@@ -2575,6 +2525,80 @@ def main():
     print(f"    2. File > Import > Upload > select the CSV file")
     print(f"    3. Choose 'Replace current sheet' or 'New sheet'")
     print(f"  Open the CSV file in Excel or any spreadsheet app to see the full results.")
+
+    # Hand the written CSV filename back to callers (e.g. the multi-city runner)
+    return csv_filename
+
+
+def main():
+    # Parse CLI args
+    args = sys.argv[1:]
+    if not args or "-h" in args or "--help" in args:
+        print("Business Finder — Find companies in ANY niche with emails")
+        print()
+        print("Usage:")
+        print(f"  python {os.path.basename(__file__)} <niche> <location>")
+        print(f"  python {os.path.basename(__file__)} --limit 30 <niche> <location>")
+        print()
+        print("Examples:")
+        print(f'  python {os.path.basename(__file__)} "fitness gym" "Denver, Colorado"')
+        print(f'  python {os.path.basename(__file__)} "dentist" "London, UK"')
+        print(f'  python {os.path.basename(__file__)} "real estate" "Dubai, UAE"')
+        print(f'  python {os.path.basename(__file__)} --limit 20 "restaurant" "Paris, France"')
+        print(f'  python {os.path.basename(__file__)} "IT" "Berlin, Germany"')
+        print()
+        print("Options:")
+        print("  --limit N   Max companies to process (default: unlimited)")
+        print("  -h, --help  Show this help")
+        sys.exit(0)
+
+    global MAX_COMPANIES
+    i = 0
+    niche = None
+    location_parts = []
+
+    while i < len(args):
+        if args[i] == "--limit":
+            if i + 1 >= len(args):
+                print(f"{_CROSS} --limit requires a number argument")
+                sys.exit(1)
+            try:
+                MAX_COMPANIES = int(args[i + 1])
+            except ValueError:
+                print(f"{_CROSS} --limit requires a number, got '{args[i + 1]}'")
+                sys.exit(1)
+            if MAX_COMPANIES < 1:
+                print(f"{_CROSS} --limit must be a positive number")
+                sys.exit(1)
+            i += 2
+        elif niche is None:
+            # First non-flag arg is the NICHE
+            niche = args[i]
+            i += 1
+        else:
+            # Remaining args are the LOCATION
+            location_parts.append(args[i])
+            i += 1
+
+    if not niche:
+        print(f"{_CROSS} Please provide a business niche (e.g., \"fitness gym\", \"restaurant\", \"IT\")")
+        print(f"  Usage: python {os.path.basename(__file__)} <niche> <location>")
+        sys.exit(1)
+
+    location = " ".join(location_parts)
+    if not location:
+        print(f"{_CROSS} Please provide a location (e.g., \"Denver, Colorado\", \"London, UK\")")
+        print(f"  Usage: python {os.path.basename(__file__)} <niche> <location>")
+        sys.exit(1)
+
+    # Single location run — the whole pipeline for this one place.
+    # run_location raises RuntimeError on geocode/Overpass failure; keep the
+    # original clean-exit behavior of the single-city CLI here.
+    try:
+        run_location(niche, location, MAX_COMPANIES)
+    except RuntimeError as e:
+        print(f"{_CROSS} {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
