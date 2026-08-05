@@ -1,0 +1,79 @@
+Austin, United States
+San Francisco, United States
+San Jose, United States
+Seattle, United States
+New York City, United States
+Boston, United States
+Cambridge, United States
+Los Angeles, United States
+San Diego, United States
+Palo Alto, United States
+Mountain View, United States
+Sunnyvale, United States
+Santa Clara, United States
+Cupertino, United States
+Menlo Park, United States
+Redwood City, United States
+Fremont, United States
+Oakland, United States
+Berkeley, United States
+Irvine, United States
+Santa Monica, United States
+Pasadena, United States
+Bellevue, United States
+Redmond, United States
+Kirkland, United States
+Dallas, United States
+Plano, United States
+Richardson, United States
+Frisco, United States
+Houston, United States
+Fort Worth, United States
+Raleigh, United States
+Durham, United States
+Chapel Hill, United States
+Cary, United States
+Morrisville, United States
+Denver, United States
+Boulder, United States
+Fort Collins, United States
+Phoenix, United States
+Tempe, United States
+Scottsdale, United States
+Chandler, United States
+Atlanta, United States
+Alpharetta, United States
+Salt Lake City, United States
+Lehi, United States
+Provo, United States
+Chicago, United States
+Portland, United States
+Hillsboro, United States
+Beaverton, United States
+Miami, United States
+Fort Lauderdale, United States
+Orlando, United States
+Tampa, United States
+Pittsburgh, United States
+Philadelphia, United States
+Minneapolis, United States
+Nashville, United States
+Ann Arbor, United States
+Detroit, United States
+Columbus, United States
+Bethesda, United States
+Rockville, United States
+Arlington, United States
+Alexandria, United States
+Reston, United States
+Herndon, United States
+Tysons, United States
+McLean, United States
+Jersey City, United States
+Stamford, United States
+Madison, United States
+Indianapolis, United States
+Las Vegas, United States
+Reno, United States
+St. Louis, United States
+Kansas City, United States
