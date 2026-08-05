@@ -14,7 +14,7 @@ on:
         default: '500'
         type: string
       cities:
-        description: 'Optional ";" separated override list (e.g. "Austin, Texas; Seattle, Washington"). Leave empty to use the full USA_CITIES list in the script'
+        description: 'City list — a file name like USA_Cities.txt (one city per line, committed to the repo) OR a ";" separated inline list (e.g. "Austin, Texas; Seattle, Washington"). Leave empty to use USA_Cities.txt if present, else the built-in list'
         required: false
         default: ''
         type: string

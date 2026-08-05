@@ -18,13 +18,17 @@ USAGE:
     python business_finder_usa_cities.py --limit 300 --niche "software"
     python business_finder_usa_cities.py --limit 100 --cities "Austin, Texas; Seattle, Washington" "IT"
     python business_finder_usa_cities.py --limit 50 --start-city 5 --max-cities 10 "IT"
+    python business_finder_usa_cities.py --limit 500 --cities USA_Cities.txt "IT"
 
 OPTIONS:
     --limit N          Companies to find PER CITY (default: 500)
     --niche X          Business niche (default: "IT"). Also accepted as the
                        first positional argument (keeps the single-city habit).
-    --cities LIST      Semicolon-separated override list of cities, e.g.
-                       "Austin, Texas; Dallas, Texas" (default: USA_CITIES below)
+    --cities LIST      City list as EITHER a semicolon-separated inline list
+                       ("Austin, Texas; Seattle, Washington") OR a path to a
+                       text file with one city per line (USA_Cities.txt).
+                       If omitted, USA_Cities.txt is used when present, else
+                       the built-in USA_CITIES list below.
     --start-city N     Skip the first N cities in the list (resume support)
     --max-cities N     Only process the first N cities (0 = all)
     --workers N        Parallel website workers (pass-through to business_finder)
@@ -32,10 +36,12 @@ OPTIONS:
     --pool N           Candidate pool multiplier (pass-through)
     -h, --help         Show this help
 
-EXAMPLES OF THE CITY LIST:
-    Edit USA_CITIES below to add/remove cities. Each entry is "City, State"
-    so Nominatim geocodes unambiguously ("New York, New York" != "New York
-    State"). A ~60-city default list of major US metros is pre-filled.
+CITY LIST FILE:
+    The preferred way to control the list is a text file (one "City, State"
+    per line, blank lines and '#' comments ignored). The workflow input
+    "cities" accepts the file name directly (e.g. USA_Cities.txt). Each entry
+    is "City, State" so Nominatim geocodes unambiguously ("New York, New
+    York" != "New York State").
 """
 
 # ─── Imports ─────────────────────────────────────────────────────────────────────
@@ -132,6 +138,32 @@ def parse_city_list(text: str) -> list:
     return cities
 
 
+def load_city_list(value: str) -> list:
+    """
+    Load a city list from a text file OR an inline ';'-separated string.
+
+    If ``value`` names an existing file (e.g. USA_Cities.txt), each non-blank
+    line that doesn't start with '#' is treated as one city. Otherwise the
+    value is parsed as an inline list like 'Austin, Texas; Dallas, Texas'.
+    Returns an empty list when nothing usable is found.
+    """
+    if os.path.isfile(value):
+        cities = []
+        with open(value, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip().strip("\"'")
+                if not line or line.startswith("#"):
+                    continue
+                cities.append(line)
+        return cities
+    # A file-like value (ends with .txt/.csv or has a path separator) that is
+    # NOT an existing file is almost certainly a typo'd path or a file that
+    # wasn't committed — error clearly instead of geocoding the name as a city.
+    if value.lower().endswith((".txt", ".csv")) or "/" in value or "\\" in value:
+        raise FileNotFoundError(f"City list file not found: {value}")
+    return parse_city_list(value)
+
+
 def print_help() -> None:
     print("Business Finder — USA Cities (multi-city)")
     print()
@@ -146,7 +178,9 @@ def print_help() -> None:
     print("Options:")
     print("  --limit N       Companies to find PER CITY (default: 500)")
     print("  --niche X       Business niche (default: \"IT\")")
-    print("  --cities LIST   ';' separated override list of cities")
+    print("  --cities LIST   A text file with one city per line (e.g.")
+    print("                  USA_Cities.txt) OR an inline ';' list like")
+    print("                  \"Austin, Texas; Seattle, Washington\"")
     print("  --start-city N  Skip the first N cities (resume support)")
     print("  --max-cities N  Only process the first N cities (0 = all)")
     print("  --workers N     Parallel website workers (default: 30)")
@@ -254,12 +288,28 @@ def main() -> None:
     if len(positionals) > 1:
         print(f"{_WARN} Extra positional arguments ignored: {positionals[1:]}")
 
-    # City list: --cities override wins, else the built-in USA_CITIES.
+    # City list: --cities wins (file OR inline list); otherwise use
+    # USA_Cities.txt if present (next to this script), else the built-in list.
+    cities_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "USA_Cities.txt")
     if cities_override:
-        cities = parse_city_list(cities_override)
+        try:
+            cities = load_city_list(cities_override)
+        except FileNotFoundError as e:
+            print(f"{_CROSS} {e}")
+            print(f"       Commit the file to the repo (one city per line) or pass an")
+            print(f"       inline list, e.g. \"Austin, Texas; Seattle, Washington\".")
+            sys.exit(1)
         if not cities:
             print(f"{_CROSS} --cities gave no usable cities: '{cities_override}'")
+            print(f"       Pass a file like USA_Cities.txt (one city per line) or")
+            print(f"       an inline list, e.g. \"Austin, Texas; Seattle, Washington\".")
             sys.exit(1)
+    elif os.path.isfile(cities_file):
+        cities = load_city_list(cities_file)
+        if not cities:
+            print(f"{_WARN} USA_Cities.txt exists but has no usable cities —"
+                  f" falling back to the built-in list.")
+            cities = list(USA_CITIES)
     else:
         cities = list(USA_CITIES)
 
