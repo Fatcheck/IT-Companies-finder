@@ -11,6 +11,8 @@ FEATURES:
   - Dry-run / preview mode (no emails sent)
   - Resume support: tracks which contacts have been emailed (append-mode log)
   - Rate-limiting between sends to avoid spam flags
+  - Rotates through several built-in HTML/plain-text templates and subject lines
+    per recipient, so no two emails are identical (anti-spam)
   - Handles both old-format (name,website,emails) and new-format CSVs
 
 SETUP — GMAIL APP PASSWORD (REQUIRED):
@@ -256,7 +258,7 @@ DEFAULT_HTML_TEMPLATE = """\
     </div>
 
     <p style="text-align: center;">
-      <a class="cta-button" href="https://deskrelief.gumroad.com/l/busines-finder?_gl=1*1g7fp3v*_ga*MTU4NDc4NTYyOS4xNzg1NDY5ODMz*_ga_6LJN6D94N6*czE3ODU0Njk4MzIkbzEkZzEkdDE3ODU0NzAxMzIkajYwJGwwJGgw" target="_blank"
+      <a class="cta-button" href="https://fautomation.gumroad.com/l/business_scraper?_gl=1*12gwlk8*_ga*MTU0NjY1NjI2OC4xNzg1ODAxODQy*_ga_6LJN6D94N6*czE3ODU4OTgwNjUkbzMkZzEkdDE3ODU5MDA2NjYkajIwJGwwJGgw" target="_blank"
          style="display:inline-block; background:#047857; color:#ffffff !important; font-weight:700; font-size:16px; padding:14px 34px; border-radius:8px; text-decoration:none;">Start Finding Leads Today</a>
     </p>
 
@@ -299,12 +301,361 @@ Most prospecting tools make you choose: find leads, or email them. This is the o
 
 PRICE: 25 EUR -- One-time payment, lifetime access, no monthly fees
 
-Get started here: https://deskrelief.gumroad.com/l/busines-finder
+Get started here: https://fautomation.gumroad.com/l/business_scraper
 
 Prefer to talk it through first? Just hit reply.
 
 Best,
 {sender_name}"""
+
+# ─── Template variants (anti-spam rotation) ─────────────────────────────────────
+
+# Product link used in every template variant. Change it here and all variants
+# (HTML buttons + plain-text links) are updated at once.
+GUMROAD_URL_HTML = "https://fautomation.gumroad.com/l/business_scraper?_gl=1*12gwlk8*_ga*MTU0NjY1NjI2OC4xNzg1ODAxODQy*_ga_6LJN6D94N6*czE3ODU4OTgwNjUkbzMkZzEkdDE3ODU5MDA2NjYkajIwJGwwJGgw"
+GUMROAD_URL_TEXT = "https://fautomation.gumroad.com/l/business_scraper"
+
+# Subject-line variants. When --subject is left at its default, one of these is
+# picked at random per recipient so subjects aren't all identical.
+# Available variables: {company}, {name}, {title}, {email}, {website}, {niche}
+SUBJECT_VARIANTS = [
+    "Business opportunity for {company}",
+    "A quick idea for {company}",
+    "Idea to help {company} find {niche} leads",
+    "Quick question for {company}",
+    "Re: {company} — a 2-minute read?",
+]
+
+# Shared stylesheet used by all extra HTML variants (variant 1 keeps its own
+# inline copy for backwards compatibility).
+_EMAIL_CSS = """\
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      line-height: 1.6;
+      color: #2A2A2A;
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #ffffff;
+    }
+    .eyebrow {
+      display: inline-block;
+      background: #ECFDF5;
+      color: #047857;
+      font-weight: 700;
+      font-size: 12.5px;
+      letter-spacing: 0.3px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      margin-bottom: 14px;
+    }
+    .hook {
+      font-size: 20px;
+      font-weight: 700;
+      color: #111827;
+      margin: 0 0 20px 0;
+      line-height: 1.35;
+    }
+    .content p {
+      margin-bottom: 14px;
+      font-size: 15px;
+    }
+    h3.subhead {
+      font-size: 15px;
+      color: #111827;
+      margin: 26px 0 10px 0;
+    }
+    ul.benefits {
+      margin: 0 0 20px 0;
+      padding: 0;
+      list-style: none;
+    }
+    ul.benefits li {
+      padding: 8px 0 8px 26px;
+      font-size: 14.5px;
+      position: relative;
+    }
+    ul.benefits li:before {
+      content: "→";
+      position: absolute;
+      left: 0;
+      color: #047857;
+      font-weight: 700;
+    }
+    .usp {
+      background: #F9FAFB;
+      border-left: 3px solid #111827;
+      padding: 12px 16px;
+      margin: 20px 0;
+      font-size: 14.5px;
+      color: #374151;
+    }
+    .testimonial {
+      background: #F9FAFB;
+      border-left: 4px solid #047857;
+      padding: 14px 18px;
+      margin: 20px 0;
+      font-style: italic;
+      color: #374151;
+      font-size: 14.5px;
+    }
+    .testimonial .attribution {
+      display: block;
+      margin-top: 8px;
+      font-style: normal;
+      font-weight: 600;
+      color: #111827;
+      font-size: 13px;
+    }
+    .pricing-box {
+      background: #F9FAFB;
+      border: 2px solid #111827;
+      border-radius: 10px;
+      padding: 18px 22px;
+      margin: 22px 0;
+      text-align: center;
+    }
+    .pricing-box .price {
+      font-size: 34px;
+      font-weight: 800;
+      color: #111827;
+    }
+    .pricing-box .sub {
+      font-size: 13.5px;
+      color: #6B7280;
+      margin-top: 4px;
+    }
+    .cta-button {
+      display: inline-block;
+      background: #047857;
+      color: #ffffff !important;
+      font-weight: 700;
+      font-size: 16px;
+      padding: 14px 34px;
+      border-radius: 8px;
+      text-decoration: none;
+    }
+    .signature {
+      margin-top: 26px;
+      padding-top: 15px;
+      border-top: 1px solid #eee;
+      font-size: 13px;
+      color: #666;
+    }
+    .fine-print {
+      font-size: 11px;
+      color: #9CA3AF;
+      text-align: center;
+      margin-top: 22px;
+      line-height: 1.5;
+    }
+"""
+
+
+def _wrap_html(content: str) -> str:
+    """Wrap template body content in the shared HTML email document."""
+    return (
+        "<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <style>\n"
+        + _EMAIL_CSS
+        + "\n  </style>\n</head>\n<body>\n  "
+        + content
+        + "\n  <div class=\"signature\">\n"
+        "    <p>Best,<br><strong>{sender_name}</strong></p>\n"
+        "  </div>\n"
+        "</body>\n</html>"
+    )
+
+
+def _cta_button(label: str) -> str:
+    """Build the CTA button anchor used in the HTML variants."""
+    return (
+        '<a class="cta-button" href="' + GUMROAD_URL_HTML + '" target="_blank" '
+        'style="display:inline-block; background:#047857; color:#ffffff !important; '
+        'font-weight:700; font-size:16px; padding:14px 34px; border-radius:8px; '
+        'text-decoration:none;">' + label + "</a>"
+    )
+
+
+# Variant 2 — direct / numbers-first angle
+_V2_BODY = """\
+  <div class="content">
+    <span class="eyebrow">From 0 to 100+ {niche} leads in one search</span>
+    <p class="hook">Hi{name_part} — how does {company} source {niche} prospects today?</p>
+
+    <p>If it involves spreadsheets, directories, or paying for two or three tools, here's a simpler route: type in a city, get 50–500+ verified businesses with names, emails, and phone numbers, and send personalized outreach from the same screen.</p>
+
+    <h3 class="subhead">Why it works:</h3>
+    <ul class="benefits">
+      <li>One search covers any city or niche — no API keys, no setup.</li>
+      <li>Emails are cleaned and verified before you send, so fewer bounces.</li>
+      <li>Built-in delays keep your messages out of spam folders.</li>
+      <li>One payment, lifetime access — not another subscription.</li>
+    </ul>
+
+    <div class="usp">Finding leads and emailing them used to take two tools. This does both in one.</div>
+
+    <div class="testimonial">
+      "Found 80-something businesses with real emails in under half an hour — then emailed them all from the same tool."
+      <span class="attribution">— verified buyer, {niche} industry</span>
+    </div>
+
+    <div class="pricing-box">
+      <div class="price">€25</div>
+      <div class="sub">One-time payment · Lifetime access · All future updates included</div>
+    </div>
+
+    <p style="text-align: center;">
+      __CTA__
+    </p>
+
+    <p style="text-align: center; font-size: 13px; color: #6B7280;">
+      Prefer to talk it through? Just hit reply.
+    </p>
+  </div>"""
+
+_V2_TEXT = """\
+Hi{name_part},
+
+How does {company} source {niche} prospects today? If it involves spreadsheets, directories, or paying for two or three tools, here's a simpler route: type in a city, get 50-500+ verified businesses with names, emails, and phone numbers, and send personalized outreach from the same screen.
+
+Why it works:
+- One search covers any city or niche -- no API keys, no setup.
+- Emails are cleaned and verified before you send, so fewer bounces.
+- Built-in delays keep your messages out of spam folders.
+- One payment, lifetime access -- not another subscription.
+
+"Found 80-something businesses with real emails in under half an hour -- then emailed them all from the same tool." -- verified buyer
+
+PRICE: 25 EUR -- One-time payment, lifetime access, all future updates included
+
+Get started here: __CTA_TEXT__
+
+Prefer to talk it through? Just hit reply.
+
+Best,
+{sender_name}"""
+
+# Variant 3 — benefit-led, structured
+_V3_BODY = """\
+  <div class="content">
+    <span class="eyebrow">The {niche} prospecting shortcut</span>
+    <p class="hook">{company} could be emailing 500 verified {niche} contacts this week.</p>
+
+    <p>Here's what this tool does for you:</p>
+    <ul class="benefits">
+      <li><strong>50–500+ leads per search</strong> — names, emails, and direct phone numbers for any city or niche.</li>
+      <li><strong>~30 minutes, not weeks</strong> — from search to drafted outreach in a single session.</li>
+      <li><strong>Verified emails</strong> — junk is scrubbed before it reaches your list.</li>
+      <li><strong>€25 one-time</strong> — no subscription, every future update included.</li>
+    </ul>
+
+    <div class="usp">Most teams replace two or three prospecting subscriptions with this one payment.</div>
+
+    <div class="testimonial">
+      "I'd never touched this niche before and still pulled 80+ businesses with real emails in under half an hour."
+      <span class="attribution">— customer, one-week user</span>
+    </div>
+
+    <div class="pricing-box">
+      <div class="price">€25</div>
+      <div class="sub">One-time payment · Lifetime access · No monthly fees</div>
+    </div>
+
+    <p style="text-align: center;">
+      __CTA__
+    </p>
+  </div>"""
+
+_V3_TEXT = """\
+Hi{name_part},
+
+{company} could be emailing 500 verified {niche} contacts this week.
+
+Here's what this tool does for you:
+- 50-500+ leads per search -- names, emails, and direct phone numbers for any city or niche.
+- ~30 minutes, not weeks -- from search to drafted outreach in a single session.
+- Verified emails -- junk is scrubbed before it reaches your list.
+- 25 EUR one-time -- no subscription, every future update included.
+
+"I'd never touched this niche before and still pulled 80+ businesses with real emails in under half an hour." -- customer
+
+PRICE: 25 EUR -- One-time payment, lifetime access, no monthly fees
+
+Get started here: __CTA_TEXT__
+
+Best,
+{sender_name}"""
+
+# Variant 4 — soft / story-led
+_V4_BODY = """\
+  <div class="content">
+    <span class="eyebrow">A tool your competitors may already use</span>
+    <p class="hook">Quick one for {company}:</p>
+
+    <p>Finding {niche} clients usually means manual research, then more time verifying emails, then a separate tool to send outreach. This one does all three — in the order that makes sense.</p>
+
+    <h3 class="subhead">What you'd get with one search:</h3>
+    <ul class="benefits">
+      <li>Contact names, titles, emails, and phone numbers for 50–500+ businesses.</li>
+      <li>Personalized outreach sent from the same tool, no exports.</li>
+      <li>Delays tuned to keep deliverability high, not get flagged.</li>
+      <li>Own it forever — one payment, no subscription.</li>
+    </ul>
+
+    <div class="usp">It works the same for a niche you know as for one you've never tried.</div>
+
+    <div class="testimonial">
+      "Replaced two subscriptions and a spreadsheet with one tool. Money well spent."
+      <span class="attribution">— verified buyer</span>
+    </div>
+
+    <div class="pricing-box">
+      <div class="price">€25</div>
+      <div class="sub">One-time payment · Lifetime access · No monthly fees</div>
+    </div>
+
+    <p style="text-align: center;">
+      __CTA__
+    </p>
+
+    <p style="text-align: center; font-size: 13px; color: #6B7280;">
+      Happy to answer any questions — just reply.
+    </p>
+  </div>"""
+
+_V4_TEXT = """\
+Hi{name_part},
+
+Finding {niche} clients usually means manual research, then more time verifying emails, then a separate tool to send outreach. This one does all three -- in the order that makes sense.
+
+What you'd get with one search:
+- Contact names, titles, emails, and phone numbers for 50-500+ businesses.
+- Personalized outreach sent from the same tool, no exports.
+- Delays tuned to keep deliverability high, not get flagged.
+- Own it forever -- one payment, no subscription.
+
+"Replaced two subscriptions and a spreadsheet with one tool. Money well spent." -- verified buyer
+
+PRICE: 25 EUR -- One-time payment, lifetime access, no monthly fees
+
+Get started here: __CTA_TEXT__
+
+Happy to answer any questions -- just reply.
+
+Best,
+{sender_name}"""
+
+# All built-in variants as (html, plain_text) pairs. Variant 1 is the original
+# template (DEFAULT_HTML_TEMPLATE / DEFAULT_TEXT_TEMPLATE).
+TEMPLATE_VARIANTS = [
+    (DEFAULT_HTML_TEMPLATE, DEFAULT_TEXT_TEMPLATE),
+    (_wrap_html(_V2_BODY.replace("__CTA__", _cta_button("Get My Leads Now"))),
+     _V2_TEXT.replace("__CTA_TEXT__", GUMROAD_URL_TEXT)),
+    (_wrap_html(_V3_BODY.replace("__CTA__", _cta_button("Claim Your Copy"))),
+     _V3_TEXT.replace("__CTA_TEXT__", GUMROAD_URL_TEXT)),
+    (_wrap_html(_V4_BODY.replace("__CTA__", _cta_button("Get Started Today"))),
+     _V4_TEXT.replace("__CTA_TEXT__", GUMROAD_URL_TEXT)),
+]
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -893,9 +1244,19 @@ def main():
         print(f"{_CROSS} All contacts have already been sent to (according to log).")
         sys.exit(0)
 
-    # Load templates
-    html_template = load_template(args.template, DEFAULT_HTML_TEMPLATE)
-    text_template = DEFAULT_TEXT_TEMPLATE
+    # Load templates: use a custom --template for every email if provided;
+    # otherwise rotate through TEMPLATE_VARIANTS so no two emails are identical.
+    custom_html_template = ""
+    if args.template:
+        if os.path.isfile(args.template):
+            custom_html_template = load_template(args.template, "")
+        else:
+            # Preserve old semantics: a missing template file falls back to the
+            # default template (rather than silently rotating random variants).
+            custom_html_template = DEFAULT_HTML_TEMPLATE
+    use_template_variants = not bool(custom_html_template)
+    # Rotate subject lines only while --subject is left at its default.
+    rotate_subjects = args.subject == DEFAULT_SUBJECT
 
     # ── Preview Mode ──
     if args.preview:
@@ -917,8 +1278,10 @@ def main():
                 "title": title,
                 "email": email,
                 "website": website,
+                "niche": args.niche,
             }
-            subject = render_template(args.subject, subj_vars)
+            subject_tpl = random.choice(SUBJECT_VARIANTS) if rotate_subjects else args.subject
+            subject = render_template(subject_tpl, subj_vars)
 
             print(f"  [{i}/{len(contacts)}]")
             print(f"    Company:  {company}")
@@ -976,6 +1339,13 @@ def main():
         title = c["title"]
         website = c["website"]
 
+        # Pick this recipient's template + subject (anti-spam rotation)
+        if use_template_variants:
+            html_tpl, text_tpl = random.choice(TEMPLATE_VARIANTS)
+        else:
+            html_tpl, text_tpl = custom_html_template, DEFAULT_TEXT_TEMPLATE
+        subject_tpl = random.choice(SUBJECT_VARIANTS) if rotate_subjects else args.subject
+
         # Build the email
         try:
             _, _, msg_string = build_email(
@@ -987,9 +1357,9 @@ def main():
                 title=title,
                 website=website,
                 niche=args.niche,
-                subject_template=args.subject,
-                html_template=html_template,
-                text_template=text_template,
+                subject_template=subject_tpl,
+                html_template=html_tpl,
+                text_template=text_tpl,
             )
         except Exception as e:
             logger.error(f"Error building email for {company} ({email}): {e}")
