@@ -77,3 +77,74 @@ Las Vegas, United States
 Reno, United States
 St. Louis, United States
 Kansas City, United States
+San Antonio, United States
+Charlotte, United States
+Sacramento, United States
+Colorado Springs, United States
+Tucson, United States
+Mesa, United States
+Gilbert, United States
+Long Beach, United States
+Folsom, United States
+Roseville, United States
+El Paso, United States
+Round Rock, United States
+Irving, United States
+Jacksonville, United States
+St. Petersburg, United States
+Palm Bay, United States
+Savannah, United States
+Augusta, United States
+Huntsville, United States
+Birmingham, United States
+Memphis, United States
+Knoxville, United States
+Chattanooga, United States
+Lexington, United States
+Louisville, United States
+New Orleans, United States
+Little Rock, United States
+Bentonville, United States
+Greensboro, United States
+Charleston, United States
+Columbia, United States
+Greenville, United States
+Virginia Beach, United States
+Norfolk, United States
+Richmond, United States
+Charlottesville, United States
+Baltimore, United States
+Cincinnati, United States
+Cleveland, United States
+Dayton, United States
+Akron, United States
+Toledo, United States
+Fort Wayne, United States
+Grand Rapids, United States
+Milwaukee, United States
+St. Paul, United States
+Des Moines, United States
+Cedar Rapids, United States
+Omaha, United States
+Wichita, United States
+Overland Park, United States
+Tulsa, United States
+Oklahoma City, United States
+Newark, United States
+Princeton, United States
+New Haven, United States
+Hartford, United States
+Providence, United States
+Worcester, United States
+Nashua, United States
+Syracuse, United States
+Albany, United States
+Buffalo, United States
+Poughkeepsie, United States
+White Plains, United States
+Boise, United States
+Bozeman, United States
+Fargo, United States
+Sioux Falls, United States
+Albuquerque, United States
+Bend, United States

@@ -31,9 +31,18 @@ OPTIONS:
                        the built-in USA_CITIES list below.
     --start-city N     Skip the first N cities in the list (resume support)
     --max-cities N     Only process the first N cities (0 = all)
+    --chunk K          Process only chunk K of the city list (with --chunks N)
+    --chunks N         Split the city list into N chunks; this run handles chunk
+                       K only. Lets GitHub Actions run the whole USA list across
+                       several parallel jobs, each finishing inside the 6h
+                       per-job timeout.
+    --skip-existing    Skip cities whose CSV file already exists on disk
+                       (auto-resume after a partial/failed run).
     --workers N        Parallel website workers (pass-through to business_finder)
     --pages N          Pages checked per site (pass-through)
     --pool N           Candidate pool multiplier (pass-through)
+    --scrape-delay S   Seconds to wait between website page requests
+                       (pass-through; default 0.35 — lower to ~0.2 for speed)
     -h, --help         Show this help
 
 CITY LIST FILE:
@@ -183,9 +192,13 @@ def print_help() -> None:
     print("                  \"Austin, Texas; Seattle, Washington\"")
     print("  --start-city N  Skip the first N cities (resume support)")
     print("  --max-cities N  Only process the first N cities (0 = all)")
+    print("  --chunk K       Process only chunk K of the city list (with --chunks)")
+    print("  --chunks N      Split the city list into N chunks; handle chunk K")
+    print("  --skip-existing Skip cities whose CSV already exists (auto-resume)")
     print("  --workers N     Parallel website workers (default: 30)")
     print("  --pages N       Pages checked per site (default: 15)")
     print("  --pool N        Candidate pool multiplier (default: 4)")
+    print("  --scrape-delay S Seconds between page requests (default: 0.35)")
     print("  -h, --help      Show this help")
 
 
@@ -200,9 +213,13 @@ def main() -> None:
     cities_override = None
     start_city = 0
     max_cities = 0
+    chunk = 0
+    chunks = 0
+    skip_existing = False
     workers = None
     pages = None
     pool = None
+    scrape_delay = None
 
     i = 0
     positionals = []
@@ -253,6 +270,29 @@ def main() -> None:
                 print(f"{_CROSS} --max-cities requires a number, got '{args[i + 1]}'")
                 sys.exit(1)
             i += 2
+        elif arg == "--chunk":
+            if i + 1 >= len(args):
+                print(f"{_CROSS} --chunk requires a number")
+                sys.exit(1)
+            try:
+                chunk = int(args[i + 1])
+            except ValueError:
+                print(f"{_CROSS} --chunk requires a number, got '{args[i + 1]}'")
+                sys.exit(1)
+            i += 2
+        elif arg == "--chunks":
+            if i + 1 >= len(args):
+                print(f"{_CROSS} --chunks requires a number")
+                sys.exit(1)
+            try:
+                chunks = int(args[i + 1])
+            except ValueError:
+                print(f"{_CROSS} --chunks requires a number, got '{args[i + 1]}'")
+                sys.exit(1)
+            i += 2
+        elif arg == "--skip-existing":
+            skip_existing = True
+            i += 1
         elif arg == "--workers":
             if i + 1 >= len(args):
                 print(f"{_CROSS} --workers requires a number")
@@ -270,6 +310,19 @@ def main() -> None:
                 print(f"{_CROSS} --pool requires a number")
                 sys.exit(1)
             pool = args[i + 1]
+            i += 2
+        elif arg == "--scrape-delay":
+            if i + 1 >= len(args):
+                print(f"{_CROSS} --scrape-delay requires a number")
+                sys.exit(1)
+            try:
+                if float(args[i + 1]) <= 0:
+                    raise ValueError
+            except ValueError:
+                print(f"{_CROSS} --scrape-delay must be a positive number, "
+                      f"got '{args[i + 1]}'")
+                sys.exit(1)
+            scrape_delay = args[i + 1]
             i += 2
         elif arg.startswith("-"):
             print(f"{_CROSS} Unknown option: {arg}")
@@ -321,9 +374,37 @@ def main() -> None:
         print(f"{_INFO} Processing at most {max_cities} cities (--max-cities).")
         cities = cities[:max_cities]
 
+    # Chunking: split the list into N chunks and keep only chunk K.
+    # Round-robin distribution (city i -> chunk i % N) so each parallel job
+    # gets a similar mix of big/small cities and finishes near the same time.
+    if chunks > 0 or chunk > 0:
+        if chunks < 1 or chunk < 1 or chunk > chunks:
+            print(f"{_CROSS} Invalid chunking: --chunk {chunk} of --chunks {chunks} "
+                  f"(need 1 <= chunk <= chunks).")
+            sys.exit(1)
+        print(f"{_INFO} Chunk {chunk}/{chunks}: processing every {chunks}-th city "
+              f"(round-robin).")
+        cities = [c for i, c in enumerate(cities) if i % chunks == chunk - 1]
+
     if not cities:
-        print(f"{_CROSS} No cities left to process.")
-        sys.exit(1)
+        # Chunking/slicing left nothing for THIS job (e.g. max_cities < chunks) —
+        # that's a valid outcome, not an error. Other chunks do their part.
+        print(f"{_INFO} No cities left to process in this chunk — nothing to do.")
+        sys.exit(0)
+
+    # Auto-resume: drop cities whose CSV already exists on disk.
+    if skip_existing:
+        before = len(cities)
+        cities = [c for c in cities
+                  if not os.path.exists(business_finder.csv_filename_for(niche, c))]
+        skipped = before - len(cities)
+        if skipped:
+            print(f"{_INFO} Skipping {skipped} cities that already have a CSV "
+                  f"(--skip-existing). {len(cities)} to go.")
+        if not cities:
+            print(f"{_INFO} All cities already have CSVs — nothing to do "
+                  f"(--skip-existing).")
+            sys.exit(0)
 
     # Pass-through tuning knobs — set BEFORE the finder reads its env vars.
     if workers:
@@ -335,6 +416,9 @@ def main() -> None:
     if pool:
         os.environ["POOL_MULTIPLIER"] = pool
         business_finder.POOL_MULTIPLIER = int(pool)
+    if scrape_delay:
+        os.environ["SCRAPE_DELAY"] = scrape_delay
+        business_finder.SCRAPE_DELAY = float(scrape_delay)
 
     print(_LINE)
     print(f"  Business Finder — USA Cities (multi-city)")

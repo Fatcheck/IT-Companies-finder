@@ -76,8 +76,20 @@ from gmail_email_sender import is_valid_target_email  # noqa: E402
 
 # ─── Configuration ───────────────────────────────────────────────────────────────
 # How long to wait between website requests (seconds).
-# For high limits (500+), lower this to ~0.3 but be aware sites may rate-limit you.
-SCRAPE_DELAY = 0.35
+# For high limits (500+), lower this to ~0.2 but be aware sites may rate-limit you.
+# Can be overridden via the SCRAPE_DELAY environment variable. A bad value
+# falls back to 0.35 instead of crashing at import (matches MAX_WORKERS etc.).
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float env var, falling back to the default on missing/bad values."""
+    try:
+        return float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+
+
+SCRAPE_DELAY = _env_float("SCRAPE_DELAY", 0.35)
 
 # Maximum number of pages to check per website.
 # Emails almost always live on contact/impressum pages, NOT the homepage, so
@@ -2032,6 +2044,17 @@ def signal_handler(sig, frame):
 
 # ─── Main ────────────────────────────────────────────────────────────────────────
 
+def csv_filename_for(niche: str, location: str) -> str:
+    """Build the CSV filename for a niche + location, exactly as run_location saves it.
+
+    Kept as its own function so other scripts (e.g. the multi-city runner) can
+    predict the output filename and skip cities whose CSV already exists.
+    """
+    clean_location = re.sub(r'[\\/*?:"<>|, ]', '_', location).strip('_')
+    clean_niche = re.sub(r'[\\/*?:"<>|, ]', '_', niche).strip('_')
+    return f"businesses_{clean_niche}_{clean_location}.csv"
+
+
 def run_location(niche: str, location: str, max_companies: int = 0) -> str:
     """Run the full business-finder pipeline for ONE location.
 
@@ -2125,9 +2148,7 @@ def run_location(niche: str, location: str, max_companies: int = 0) -> str:
     google_count = 0
 
     # Build CSV filename: {niche}_{location}.csv
-    clean_location = re.sub(r'[\\/*?:"<>|, ]', '_', location).strip('_')
-    clean_niche = re.sub(r'[\\/*?:"<>|, ]', '_', niche).strip('_')
-    csv_filename = f"businesses_{clean_niche}_{clean_location}.csv"
+    csv_filename = csv_filename_for(niche, location)
 
     # Pre-filter: cheap checks (no name, no website) done sequentially first
     valid_companies = []

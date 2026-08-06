@@ -28,31 +28,73 @@ on:
         required: false
         default: '0'
         type: string
-      workers:
-        description: 'Parallel workers (default 30)'
+      chunks:
+        description: 'Split the city list across N PARALLEL jobs. The 6h per-job timeout cannot scrape all 79 cities in one job (~9h total), so the list is split round-robin across N jobs (default 4).'
         required: false
-        default: '30'
+        default: '4'
+        type: string
+      workers:
+        description: 'Parallel website workers — the #1 SPEED knob. Scraping is network-bound, so 60 is a safe 2x over the old 30. Raise to 100+ for even faster runs; lower if sites rate-limit (default 60)'
+        required: false
+        default: '60'
         type: string
       pages:
-        description: 'Pages to check per site (default 15)'
+        description: 'Pages to check per site — a COVERAGE knob, not a speed knob. Emails live on contact/impressum pages; cutting below ~10 loses emails. Keep 15 for full coverage (default 15)'
         required: false
         default: '15'
         type: string
       pool:
-        description: 'Candidate pool multiplier per city (default 4)'
+        description: 'Candidate pool multiplier per city — a COVERAGE knob. Cities are candidate-starved (most fill far under 500), so cutting this below 4 reduces rows. Keep 4 (default 4)'
         required: false
         default: '4'
         type: string
+      scrape_delay:
+        description: 'Seconds between website page requests — a SPEED knob. 0.2 is ~40% faster than 0.35 with modest rate-limit risk; raise if sites start blocking (default 0.2)'
+        required: false
+        default: '0.2'
+        type: string
+      skip_existing:
+        description: 'Skip cities whose CSV is already committed (auto-resume a partial run)'
+        required: false
+        default: true
+        type: boolean
 
 env:
   PYTHONUNBUFFERED: 1
 
+# One scrape run at a time — parallel runs would race on the git push.
+concurrency:
+  group: scrape-usa-cities
+  cancel-in-progress: false
+
 jobs:
-  scrape:
+  # Computes the chunk numbers [1..N] so the matrix below can fan out.
+  prep:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max (GitHub limit) — the whole USA list takes a while
+    outputs:
+      chunks: ${{ steps.gen.outputs.chunks }}
+    steps:
+      - name: Generate chunk list
+        id: gen
+        run: |
+          CHUNKS="${{ inputs.chunks }}"
+          if ! [[ "$CHUNKS" =~ ^[1-9][0-9]*$ ]] || [ "$CHUNKS" -gt 20 ]; then
+            echo "::error::chunks must be an integer between 1 and 20, got '$CHUNKS'"
+            exit 1
+          fi
+          # chunks=[1,2,...,N] as a JSON array for strategy.matrix
+          echo "chunks=[$(seq -s, 1 "$CHUNKS")]" >> "$GITHUB_OUTPUT"
+
+  scrape:
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours — GitHub's hard cap for hosted runners
     permissions:
       contents: write  # needed for the commit-back step
+    strategy:
+      fail-fast: false   # one bad chunk must not cancel the others
+      matrix:
+        chunk: ${{ fromJSON(needs.prep.outputs.chunks) }}
 
     steps:
       - name: Checkout repository
@@ -68,7 +110,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run Business Finder (USA cities list)
+      - name: Run Business Finder (chunk ${{ matrix.chunk }} of ${{ inputs.chunks }})
         run: |
           # Build the --cities args only when the input is not empty. A bash
           # array is used so semicolons/spaces in the city list survive
@@ -79,16 +121,25 @@ jobs:
             CITIES_ARGS+=(--cities "${{ inputs.cities }}")
           fi
 
+          SKIP_EXISTING_ARGS=()
+          if [ "${{ inputs.skip_existing }}" = "true" ]; then
+            SKIP_EXISTING_ARGS+=(--skip-existing)
+          fi
+
           python business_finder_usa_cities.py \
             --limit "${{ inputs.limit }}" \
             --niche "${{ inputs.niche }}" \
             --start-city "${{ inputs.start_city }}" \
             --max-cities "${{ inputs.max_cities }}" \
+            --chunk "${{ matrix.chunk }}" \
+            --chunks "${{ inputs.chunks }}" \
+            "${SKIP_EXISTING_ARGS[@]}" \
             "${CITIES_ARGS[@]}"
         env:
           MAX_WORKERS: ${{ inputs.workers }}
           MAX_PAGES_PER_SITE: ${{ inputs.pages }}
           POOL_MULTIPLIER: ${{ inputs.pool }}
+          SCRAPE_DELAY: ${{ inputs.scrape_delay }}
           # Optional: add a free HERE API key (developer.here.com, 30k req/mo)
           # as a repository secret named HERE_API_KEY to unlock more candidate
           # businesses per city (they come with websites attached).
@@ -104,16 +155,16 @@ jobs:
       - name: Upload CSV results (artifact - download from Actions tab)
         uses: actions/upload-artifact@v4
         with:
-          name: businesses-usa-cities-${{ github.run_id }}
-          path: "*.csv"
+          name: businesses-usa-cities-chunk-${{ matrix.chunk }}-${{ github.run_id }}
+          path: "businesses_*.csv"
           retention-days: 30
           if-no-files-found: warn
 
-      - name: Commit CSVs back to repository
+      - name: Commit CSVs back to repository (chunk ${{ matrix.chunk }})
         run: |
           # Stop early when the finder produced no CSVs.
           shopt -s nullglob
-          csv_files=(*.csv)
+          csv_files=(businesses_*.csv)
           if [ "${#csv_files[@]}" -eq 0 ]; then
             echo "No CSV files found - nothing to commit."
             exit 0
@@ -124,17 +175,35 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # Stage the CSVs
-          git add -- *.csv
+          git add -- businesses_*.csv
 
           # Commit only when there is something to commit. The message is fed
           # through stdin (-F -) so the niche text and the [skip ci] marker
           # can never be parsed as git arguments or pathspecs.
-          if ! git diff --cached --quiet; then
-            printf 'Add CSV results for %s / USA cities list [skip ci]\n' "$NICHE" | git commit -F -
-            git push
-            echo "Committed and pushed CSV results."
-          else
+          if git diff --cached --quiet; then
             echo "No changes to commit - CSVs already up to date."
+            exit 0
           fi
+
+          printf 'Add CSV results for %s / USA cities list (chunk %s/%s) [skip ci]\n' \
+            "$NICHE" "$MATRIX_CHUNK" "$MATRIX_CHUNKS" | git commit -F -
+
+          # Parallel chunks push at the same time — pull --rebase first so a
+          # non-fast-forward push never fails the whole job. Retry the whole
+          # pull+push cycle: another chunk may push while we rebase (conflicts
+          # are impossible — every chunk writes its own distinct CSVs).
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin "$GITHUB_REF_NAME" 2>/dev/null
+            if git push origin "$GITHUB_REF_NAME" 2>/dev/null; then
+              echo "Committed and pushed CSV results for chunk $MATRIX_CHUNK."
+              exit 0
+            fi
+            echo "Push needed a retry (attempt $attempt) - another chunk pushed."
+            sleep 10
+          done
+          echo "::error::Could not push after 5 attempts."
+          exit 1
         env:
           NICHE: ${{ inputs.niche }}
+          MATRIX_CHUNK: ${{ matrix.chunk }}
+          MATRIX_CHUNKS: ${{ inputs.chunks }}
